@@ -186,7 +186,7 @@ class MARCS_V34_2_Engine:
         sr = close[-1] + (2.2 * noise_std)
         return {'price': close[-1], 'trend': trend, 'imf1': imf1, 'sync': sync, 'd_alpha': d_alpha, 'sl': sl, 'sr': sr, 'df': self.df, 'noise_std': noise_std}
 
-# --- 繪圖功能 ---
+# --- 繪圖功能 (修復亂碼版：改用英文標題) ---
 def generate_plots(res):
     plt.style.use('dark_background')
     fig = plt.figure(figsize=(16, 14), facecolor='none') 
@@ -194,30 +194,39 @@ def generate_plots(res):
     chart_bg = '#0d1117' 
     alpha_val = 0.7
     
+    # 圖 1: Trend
     ax1 = fig.add_subplot(gs[0, :]); ax1.set_facecolor(chart_bg); ax1.patch.set_alpha(alpha_val)
     ax1.plot(res['trend'][-60:], color='#00f2ff', lw=3,  path_effects=[])
-    ax1.set_title("1. CEEMD Trend: 機構資金主趨勢", color='#00f2ff', loc='left', fontsize=14)
+    # 修改這裡：中文 -> 英文
+    ax1.set_title("1. INSTITUTIONAL TREND (CEEMD)", color='#00f2ff', loc='left', fontsize=14, fontweight='bold')
     ax1.grid(True, color='#30363d', linestyle='--', linewidth=0.5)
     
+    # 圖 2: Sync
     ax2 = fig.add_subplot(gs[1, 0]); ax2.set_facecolor(chart_bg); ax2.patch.set_alpha(alpha_val)
     sync_data = res['sync'][-30:]
     colors = ['#3fb950' if s > 0 else '#f85149' for s in sync_data]
     ax2.bar(range(30), sync_data, color=colors, alpha=0.9)
-    ax2.set_title("2. WCA Sync: 動能同步狀態", color='#3fb950', loc='left', fontsize=14)
+    # 修改這裡：中文 -> 英文
+    ax2.set_title("2. MOMENTUM SYNC (WCA)", color='#3fb950', loc='left', fontsize=14, fontweight='bold')
     ax2.grid(True, color='#30363d', linestyle='--', linewidth=0.5)
     
+    # 圖 3: Risk
     ax3 = fig.add_subplot(gs[1, 1]); ax3.set_facecolor(chart_bg); ax3.patch.set_alpha(alpha_val)
     x = np.linspace(0, 1, 100); y = -(x-0.5)**2 + res['d_alpha']
     ax3.plot(x, y, color='#a371f7', lw=3); ax3.fill_between(x, y, color='#a371f7', alpha=0.2)
-    ax3.set_title(f"3. MF Risk: {res['d_alpha']:.2f} (市場複雜度)", color='#a371f7', loc='left', fontsize=14)
+    # 修改這裡：中文 -> 英文
+    ax3.set_title(f"3. MARKET COMPLEXITY: {res['d_alpha']:.2f}", color='#a371f7', loc='left', fontsize=14, fontweight='bold')
     ax3.grid(True, color='#30363d', linestyle='--', linewidth=0.5)
     
+    # 圖 4: Price & SL
     ax4 = fig.add_subplot(gs[2:, :]); ax4.set_facecolor(chart_bg); ax4.patch.set_alpha(alpha_val)
     df_p = res['df'].tail(60)
-    ax4.plot(df_p.index, df_p['Close'], color='#e6edf3', lw=2, label='Price')
+    col_name = 'Close' if 'Close' in df_p.columns else df_p.columns[0]
+    ax4.plot(df_p.index, df_p[col_name], color='#e6edf3', lw=2, label='Price')
     ax4.axhline(res['sl'], color='#f85149', ls='--', lw=2, label=f'SL: {res["sl"]:.1f}')
     ax4.fill_between(df_p.index, res['sl'], res['price'], color='#f85149', alpha=0.1)
-    ax4.set_title("4. Action Boundary: 實務執行邊界", color='#e6edf3', loc='left', fontsize=14)
+    # 修改這裡：中文 -> 英文
+    ax4.set_title("4. ACTION BOUNDARY & STOP LOSS", color='#e6edf3', loc='left', fontsize=14, fontweight='bold')
     ax4.legend(loc='upper left', frameon=False)
     ax4.grid(True, color='#30363d', linestyle='--', linewidth=0.5)
     
