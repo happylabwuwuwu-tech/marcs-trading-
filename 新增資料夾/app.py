@@ -385,6 +385,21 @@ def main():
 
         else:
             st.error(f"❌ CONNECTION FAILED: UNABLE TO RETRIEVE DATA FOR {ticker_input}")
-
+# === 這裡是新增的免責聲明區塊 ===
+        st.markdown("---")
+        st.markdown("""
+            <div style='background: rgba(255, 50, 50, 0.1); border: 1px solid rgba(255, 50, 50, 0.3); border-radius: 4px; padding: 10px; margin-top: 10px;'>
+                <div style='color: #ff7b72; font-size: 10px; font-weight: bold; margin-bottom: 5px;'>
+                    ⚠️ LIABILITY PROTOCOL (免責聲明)
+                </div>
+                <div style='color: #8b949e; font-size: 10px; line-height: 1.4;'>
+                    本系統僅供技術研究與學術交流，<b>不構成任何投資建議</b>。<br>
+                    金融交易存在高度風險，過往數據不保證未來獲利。使用者應自行承擔所有交易風險。
+                </div>
+                <div style='color: #58a6ff; font-size: 9px; margin-top: 5px; text-align: right;'>
+                    >> USER DISCRETION ADVISED
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
 if __name__ == "__main__":
     main()
