@@ -312,7 +312,7 @@ def main():
     
     st.sidebar.markdown("---")
     # 請替換為你的 GitHub Raw Video URL
-    video_url = "https://raw.githubusercontent.com/YOUR_NAME/YOUR_REPO/main/model_arch.mp4.mp4" 
+    video_url = "model_arch.mp4.mp4"
     st.sidebar.markdown("### 🎥 系統架構演示")
     try: st.sidebar.video(video_url)
     except: st.sidebar.info("https://github.com/happylabwuwuwu-tech/marcs-trading-/blob/main/%E6%96%B0%E5%A2%9E%E8%B3%87%E6%96%99%E5%A4%BE/model_arch.mp4.mp4")
