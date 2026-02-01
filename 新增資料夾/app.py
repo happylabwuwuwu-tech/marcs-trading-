@@ -391,14 +391,31 @@ def main():
         if factor_data: st.markdown(render_factor_table(factor_data), unsafe_allow_html=True)
         
         # Valuation & Risk
-        st.markdown("##### ⚖️ Valuation & Risk")
-        if dcf_res:
-            fair = dcf_res['fair']; upside = (fair - curr_p) / curr_p * 100
-            u_color = "#4caf50" if upside > 0 else "#f44336"
-            st.markdown(f"""<div style="background:#1e1e1e; border:1px solid #333; padding:10px; border-radius:4px; margin-bottom:10px;"><div style="display:flex; justify-content:space-between; color:#bbb; font-size:12px;"><span>DCF Fair Value</span><span>Upside</span></div><div style="display:flex; justify-content:space-between; align-items:baseline;"><span style="font-size:20px; font-weight:bold; color:white;">${fair:.2f}</span><span style="font-size:16px; font-weight:bold; color:{u_color};">{upside:+.1f}%</span></div></div>""", unsafe_allow_html=True)
+with side_col:
+        st.markdown(render_verdict(target, hybrid, m_score), unsafe_allow_html=True)
+        st.markdown("##### 🧬 Factor Profile")
+        if factor_data: st.markdown(render_factor_table(factor_data), unsafe_allow_html=True)
         
+        st.markdown("##### ⚖️ Valuation & Risk")
+        # [Fix] 增加 curr_p > 0 的防呆判斷，防止除以零錯誤
+        if dcf_res and curr_p > 0:
+            fair = dcf_res['fair']
+            upside = (fair - curr_p) / curr_p * 100
+            u_color = "#4caf50" if upside > 0 else "#f44336"
+            st.markdown(f"""
+            <div style="background:#1e1e1e; border:1px solid #333; padding:10px; border-radius:4px; margin-bottom:10px;">
+                <div style="display:flex; justify-content:space-between; color:#bbb; font-size:12px;"><span>DCF Fair Value</span><span>Upside</span></div>
+                <div style="display:flex; justify-content:space-between; align-items:baseline;">
+                    <span style="font-size:20px; font-weight:bold; color:white;">${fair:.2f}</span>
+                    <span style="font-size:16px; font-weight:bold; color:{u_color};">{upside:+.1f}%</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        elif dcf_res:
+            # 如果有估值但沒有股價 (curr_p=0)
+            st.warning("⚠️ 數據源暫無報價，無法計算潛在空間。")
+            
         st.markdown(f"""<div style="background:#1e1e1e; border:1px solid #333; padding:10px; border-radius:4px;"><div style="color:#888; font-size:11px;">SUGGESTED SIZE</div><div style="font-size:24px; color:#4facfe; font-weight:bold;">{risk_dets['pct']}% <span style="font-size:14px; color:#ccc;">(${risk_dets['cap']:,})</span></div><div style="color:#f44336; font-size:12px; margin-top:4px;">Stop Loss: ${sl_p:.2f}</div></div>""", unsafe_allow_html=True)
-
     # --- 4. News Section ---
     st.markdown("---")
     st.markdown("### 📰 Intel Center (High Relevance)")
