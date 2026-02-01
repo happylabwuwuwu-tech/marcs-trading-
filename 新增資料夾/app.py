@@ -16,7 +16,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 # 0. 視覺核心 (星際美學)
 # =============================================================================
-st.set_page_config(page_title="MARCS V73 戰略修復版", layout="wide", page_icon="🌌")
+st.set_page_config(page_title="MARCS V74 艾爾德戰神版", layout="wide", page_icon="🛡️")
 
 st.markdown("""
 <style>
@@ -37,22 +37,22 @@ st.markdown("""
     .metric-card {
         background: rgba(18, 18, 22, 0.75); 
         backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-        border: 1px solid rgba(0, 242, 255, 0.15);
+        border: 1px solid rgba(255, 165, 0, 0.15); /* Elder 喜歡暖色系提示 */
         border-radius: 12px; padding: 20px; text-align: center;
         box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
         transition: all 0.3s ease;
     }
     .metric-card:hover { 
         transform: translateY(-5px); 
-        border-color: rgba(0, 242, 255, 0.6); 
-        box-shadow: 0 0 20px rgba(0, 242, 255, 0.2);
+        border-color: rgba(255, 165, 0, 0.6); 
+        box-shadow: 0 0 20px rgba(255, 165, 0, 0.2);
     }
 
     .metric-value { color: #fff; font-size: 28px; font-weight: 700; text-shadow: 0 0 10px rgba(255,255,255,0.1); }
     .metric-label { color: #8b949e; font-size: 12px; letter-spacing: 1px; font-family: 'Roboto Mono'; text-transform: uppercase; }
-    .metric-sub { font-size: 12px; color: #58a6ff; margin-top: 5px; font-family: 'Roboto Mono'; }
+    .metric-sub { font-size: 12px; color: #ffb86c; margin-top: 5px; font-family: 'Roboto Mono'; }
     
-    .stButton>button { width: 100%; border-radius: 5px; font-weight: bold; background: linear-gradient(90deg, #1f6feb 0%, #00f2ff 100%); color:black; border:none;}
+    .stButton>button { width: 100%; border-radius: 5px; font-weight: bold; background: linear-gradient(90deg, #333 0%, #ffae00 100%); color:white; border:none;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -119,7 +119,7 @@ class Global_Market_Loader:
         return []
 
 # =============================================================================
-# 2. 分析引擎
+# 2. 分析引擎 (Elder 邏輯置換)
 # =============================================================================
 class Macro_Engine:
     @staticmethod
@@ -136,7 +136,8 @@ class Macro_Engine:
             return {"name": name, "price": c.iloc[-1], "trend": trend}
         except: return None
 
-class Scanner_Engine_V38:
+# 掃描器也改用 Elder 邏輯 (MACD/Force)
+class Scanner_Engine_Elder:
     @staticmethod
     def analyze_single(ticker, min_score=60):
         try:
@@ -146,29 +147,38 @@ class Scanner_Engine_V38:
             if 'Adj Close' in df.columns: df.rename(columns={'Adj Close': 'Close'}, inplace=True)
             c = df['Close']; v = df['Volume']
             if len(v)>0 and v.iloc[-1]==0: return None
-            ma20 = c.rolling(20).mean().iloc[-1]; ma60 = c.rolling(60).mean().iloc[-1]
-            if not (c.iloc[-1] > ma20 > ma60): return None
             
-            delta = c.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs)).iloc[-1]
+            # Elder Impulse System Check
+            ema22 = c.ewm(span=22).mean() # 週線級別的日線映射
+            
+            # MACD Logic
+            ema12 = c.ewm(span=12).mean()
+            ema26 = c.ewm(span=26).mean()
+            macd = ema12 - ema26
+            signal = macd.ewm(span=9).mean()
+            hist = macd - signal
             
             score = 40
-            if 55 <= rsi <= 75: score += 20
-            elif rsi > 75: score += 10
-            if v.iloc[-1] > v.rolling(5).mean().iloc[-1]*1.3: score += 15
+            # 趨勢向上
+            if c.iloc[-1] > ema22.iloc[-1]: score += 10
+            # 動能增強 (MACD Hist 變大)
+            if hist.iloc[-1] > hist.iloc[-2]: score += 20
+            # 強力指標 (Force Index)
+            fi = c.diff() * v
+            fi_13 = fi.ewm(span=13).mean()
+            if fi_13.iloc[-1] > 0: score += 10
             
             tr = pd.concat([df['High']-df['Low'], (df['High']-c.shift()).abs(), (df['Low']-c.shift()).abs()], axis=1).max(axis=1)
             atr = tr.rolling(14).mean().iloc[-1]
-            sl = max(c.iloc[-1]-2.5*atr, ma20*0.98)
+            sl = max(c.iloc[-1]-2.5*atr, ema22.iloc[-1]*0.98) # 停損守 EMA22 或 ATR
             
+            # 這裡回傳的 Key 必須小寫，對應 V68 格式
             if score < min_score: return None
-            return {"ticker": ticker, "price": c.iloc[-1], "score": score, "rsi": rsi, "sl": sl}
+            return {"ticker": ticker, "price": c.iloc[-1], "score": score, "sl": sl}
         except: return None
 
-class Micro_Engine:
+# 深度分析引擎 (全面採用 Elder 指標)
+class Micro_Engine_Elder:
     @staticmethod
     def analyze(ticker):
         try:
@@ -178,16 +188,51 @@ class Micro_Engine:
             c = df['Close']; h = df['High']; l = df['Low']; v = df['Volume']
             score = 50; signals = []
             
-            ema20 = c.ewm(span=20).mean()
+            # 1. 趨勢：EMA 22 (代表月線/趨勢線)
+            ema22 = c.ewm(span=22).mean()
+            if c.iloc[-1] > ema22.iloc[-1]: score += 10; signals.append("EMA趨勢向上")
+            
+            # 2. 動能：MACD Histogram
+            ema12 = c.ewm(span=12).mean()
+            ema26 = c.ewm(span=26).mean()
+            macd = ema12 - ema26
+            signal = macd.ewm(span=9).mean()
+            hist = macd - signal
+            
+            # 3. 力量：Force Index
+            fi = c.diff() * v
+            fi_13 = fi.ewm(span=13).mean()
+            fi_2 = fi.ewm(span=2).mean()
+            
+            # 判斷 Elder 脈衝系統 (Impulse System)
+            # 綠燈：EMA 上升 且 MACD 柱狀圖 上升
+            is_green = (ema22.iloc[-1] > ema22.iloc[-2]) and (hist.iloc[-1] > hist.iloc[-2])
+            
+            if is_green: 
+                score += 20
+                signals.append("🔥 Elder 綠燈 (做多)")
+            
+            # 判斷主力資金 (Force Index)
+            if fi_13.iloc[-1] > 0: 
+                score += 10
+                signals.append("主力買盤")
+            
+            # 回檔買點偵測 (趨勢向上 + 短線 Force Index < 0)
+            if (fi_13.iloc[-1] > 0) and (fi_2.iloc[-1] < 0) and is_green:
+                score += 15
+                signals.append("✨ 完美回檔買點")
+
+            # 準備繪圖數據
             atr = (h-l).rolling(14).mean()
-            k_upper = ema20 + 2.0 * atr.rolling(10).mean()
-            k_lower = ema20 - 2.0 * atr.rolling(10).mean()
+            k_upper = ema22 + 2.0 * atr.rolling(10).mean()
+            k_lower = ema22 - 2.0 * atr.rolling(10).mean()
             
-            if c.iloc[-1] > k_upper.iloc[-1]: score += 15; signals.append("Keltner 突破")
-            obv = (np.sign(c.diff()) * v).fillna(0).cumsum()
-            if obv.iloc[-1] > obv.rolling(20).mean().iloc[-1]: score += 5; signals.append("OBV 強勢")
+            df['EMA22'] = ema22
+            df['MACD_Hist'] = hist
+            df['Force_Index'] = fi_13
+            df['K_Upper'] = k_upper
+            df['K_Lower'] = k_lower
             
-            df['K_Upper'] = k_upper; df['K_Lower'] = k_lower
             return score, signals, df, atr.iloc[-1]
         except: return 50, [], pd.DataFrame(), 0
 
@@ -204,19 +249,14 @@ class Risk_Manager:
         if dist <= 0: return 0, {}
         
         conf = hybrid_score / 100.0
-        
-        # 計算倉位股數/單位
         size = int((risk/dist) * (0.5 if vol_cap>0.8 else 1.0) * conf)
         if vol_cap > 0.8: size = round((risk/dist)*0.5*conf, 4)
         
-        # [V73] 計算百分比
+        # 百分比建議
         position_value = size * price
         pct_capital = (position_value / capital) * 100
-        
-        # 限制最大倉位 50% 防止爆倉
         if pct_capital > 50: 
-            pct_capital = 50
-            size = (capital * 0.5) / price
+            pct_capital = 50; size = (capital * 0.5) / price
             if vol_cap <= 0.8: size = int(size)
             position_value = size * price
 
@@ -226,7 +266,6 @@ class Risk_Manager:
 # MAIN UI
 # =============================================================================
 def main():
-    # --- Sidebar ---
     st.sidebar.markdown("## ⚙️ 戰情控制台")
     capital = st.sidebar.number_input("總本金", value=1000000, step=100000)
     
@@ -243,11 +282,11 @@ def main():
             limit = 0
             if "台股" in market and st.checkbox("限制數量", value=True): limit = st.slider("上限", 100, 2000, 300)
             if st.button("啟動掃描"):
-                with st.spinner("Scanning..."):
+                with st.spinner("Elder Scanner Running..."):
                     tickers = Global_Market_Loader.get_scan_list(market, limit)
                     res = []
                     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as exe:
-                        futures = {exe.submit(Scanner_Engine_V38.analyze_single, t, 60): t for t in tickers}
+                        futures = {exe.submit(Scanner_Engine_Elder.analyze_single, t, 60): t for t in tickers}
                         for f in concurrent.futures.as_completed(futures):
                             r = f.result()
                             if r: res.append(r)
@@ -263,8 +302,7 @@ def main():
     video_file = "demo.mp4"
     if os.path.exists(video_file): st.sidebar.video(video_file)
 
-    # --- Main ---
-    st.markdown("<h1 style='text-align:center; color:#00f2ff; text-shadow: 0 0 10px rgba(0,242,255,0.5);'>🛡️ MARCS V73 戰略修復版</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align:center; color:#ffae00; text-shadow: 0 0 10px rgba(255,174,0,0.5);'>🛡️ MARCS V74 艾爾德戰神版</h1>", unsafe_allow_html=True)
 
     if "scan_results" not in st.session_state: st.session_state.scan_results = []
     if "macro_data" not in st.session_state: st.session_state.macro_data = {}
@@ -274,7 +312,7 @@ def main():
 
     # ZONE 1: Macro
     st.markdown("### 📡 1. 全球宏觀 (Macro)")
-    if st.button("🔄 同步全球數據 (Update)"):
+    if st.button("🔄 同步全球數據 (Yield Update)"):
         with st.spinner("Analyzing Yield Spreads..."):
             macro_res = {}
             cols = st.columns(5)
@@ -308,8 +346,10 @@ def main():
         st.markdown("---")
         st.markdown(f"### 🎯 深度戰略分析: {target}")
         
-        with st.spinner(f"Processing {target}..."):
-            m_score, sigs, df_m, atr = Micro_Engine.analyze(target)
+        with st.spinner(f"Applying Triple Screen Analysis for {target}..."):
+            # 使用新的 Elder 引擎
+            m_score, sigs, df_m, atr = Micro_Engine_Elder.analyze(target)
+            
             impact = 0
             if st.session_state.macro_data:
                 impact = Global_Market_Loader.get_correlation_impact(target, st.session_state.macro_data)
@@ -325,63 +365,51 @@ def main():
             if curr_p > 0:
                 size, dets = Risk_Manager.calculate(capital, curr_p, sl_p, target, hybrid)
                 
-                # --- V73 更新：倉位改成百分比顯示 ---
+                # --- 卡片顯示 ---
                 c1, c2, c3, c4 = st.columns(4)
-                with c1: st.markdown(f"""<div class="metric-card"><div class="metric-label">微觀評分</div><div class="metric-value">{m_score}</div><div class="metric-sub">{', '.join(sigs)}</div></div>""", unsafe_allow_html=True)
+                with c1: st.markdown(f"""<div class="metric-card"><div class="metric-label">艾爾德評分</div><div class="metric-value">{m_score}</div><div class="metric-sub">{', '.join(sigs) if sigs else '盤整'}</div></div>""", unsafe_allow_html=True)
                 with c2: 
                     clr = "#3fb950" if impact>0 else "#f85149"
                     st.markdown(f"""<div class="metric-card"><div class="metric-label">宏觀修正</div><div class="metric-value" style="color:{clr}">{impact}</div></div>""", unsafe_allow_html=True)
-                with c3: st.markdown(f"""<div class="metric-card" style="border-color:#00f2ff"><div class="metric-label">總體評分</div><div class="metric-value" style="color:#00f2ff">{hybrid}</div></div>""", unsafe_allow_html=True)
-                
-                # 這裡改為顯示 %
+                with c3: st.markdown(f"""<div class="metric-card" style="border-color:#ffae00"><div class="metric-label">綜合總分</div><div class="metric-value" style="color:#ffae00">{hybrid}</div></div>""", unsafe_allow_html=True)
                 with c4: st.markdown(f"""<div class="metric-card"><div class="metric-label">建議倉位 %</div><div class="metric-value">{dets['pct']}%</div><div class="metric-sub">{size} 股 (${dets['cap']:,})</div></div>""", unsafe_allow_html=True)
                 
-                # Chart
+                # --- 圖表區 (Elder Style) ---
                 st.markdown("#### 📊 戰術圖表 (Tactical Chart)")
-                tab1, tab2 = st.tabs(["🕯️ Keltner 主圖", "🌊 趨勢細節 (RSI/OBV)"])
+                tab1, tab2 = st.tabs(["🕯️ Keltner 主圖", "🌊 MACD & Force Index (籌碼)"])
                 
                 with tab1:
                     fig, ax = plt.subplots(figsize=(12, 5))
                     sub = df_m.tail(120)
                     ax.plot(sub.index, sub['Close'], color='#e6edf3', lw=1.5, label='Price')
-                    ax.plot(sub.index, sub['K_Upper'], color='#00f2ff', ls='--', alpha=0.5)
-                    ax.plot(sub.index, sub['K_Lower'], color='#00f2ff', ls='--', alpha=0.5)
-                    ax.fill_between(sub.index, sub['K_Upper'], sub['K_Lower'], color='#00f2ff', alpha=0.1)
+                    ax.plot(sub.index, sub['EMA22'], color='#ffae00', lw=1.5, label='EMA 22 (Trend)') # Elder 的趨勢線
+                    ax.plot(sub.index, sub['K_Upper'], color='#00f2ff', ls='--', alpha=0.3)
+                    ax.plot(sub.index, sub['K_Lower'], color='#00f2ff', ls='--', alpha=0.3)
+                    ax.fill_between(sub.index, sub['K_Upper'], sub['K_Lower'], color='#00f2ff', alpha=0.05)
                     ax.axhline(sl_p, color='#f85149', ls='-', label=f'SL: {sl_p:.2f}')
                     ax.legend()
                     ax.set_facecolor('#0d1117'); fig.patch.set_facecolor('#0d1117')
                     ax.tick_params(colors='#8b949e'); ax.grid(True, color='#30363d', alpha=0.3)
                     st.pyplot(fig)
                 
-                # --- V73 更新：補上趨勢細節圖表 ---
                 with tab2:
-                    st.caption("展示 RSI 動能指標與成交量變化")
                     if not df_m.empty:
-                        # 計算指標
-                        delta = df_m['Close'].diff()
-                        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-                        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-                        rs = gain / loss
-                        rsi = 100 - (100 / (1 + rs))
-                        
-                        fig2, (ax_rsi, ax_vol) = plt.subplots(2, 1, figsize=(12, 6), sharex=True, height_ratios=[1, 1])
+                        fig2, (ax_macd, ax_fi) = plt.subplots(2, 1, figsize=(12, 6), sharex=True, height_ratios=[1, 1])
                         sub_ind = df_m.tail(120)
-                        rsi_sub = rsi.tail(120)
                         
-                        # RSI Plot
-                        ax_rsi.plot(rsi_sub.index, rsi_sub, color='#d2a8ff', lw=1.5)
-                        ax_rsi.axhline(70, color='#f85149', ls='--', alpha=0.5)
-                        ax_rsi.axhline(30, color='#3fb950', ls='--', alpha=0.5)
-                        ax_rsi.set_title('Relative Strength Index (RSI)', color='white', fontsize=10)
-                        ax_rsi.set_facecolor('#0d1117')
-                        ax_rsi.tick_params(colors='#8b949e')
+                        # 1. MACD Histogram (Green/Red)
+                        # 如果 hist > prev_hist 畫綠色，否則紅色
+                        hist = sub_ind['MACD_Hist']
+                        colors = ['#3fb950' if hist.iloc[i] > hist.iloc[i-1] else '#f85149' for i in range(len(hist))]
+                        ax_macd.bar(sub_ind.index, hist, color=colors, alpha=0.9)
+                        ax_macd.set_title('MACD Histogram (Momentum)', color='white', fontsize=10)
+                        ax_macd.set_facecolor('#0d1117'); ax_macd.tick_params(colors='#8b949e')
                         
-                        # Volume Plot
-                        colors = ['#f85149' if o > c else '#3fb950' for o, c in zip(sub_ind['Open'], sub_ind['Close'])]
-                        ax_vol.bar(sub_ind.index, sub_ind['Volume'], color=colors, alpha=0.8)
-                        ax_vol.set_title('Volume Profile', color='white', fontsize=10)
-                        ax_vol.set_facecolor('#0d1117')
-                        ax_vol.tick_params(colors='#8b949e')
+                        # 2. Force Index
+                        ax_fi.plot(sub_ind.index, sub_ind['Force_Index'], color='#00f2ff', lw=1.5)
+                        ax_fi.axhline(0, color='gray', ls='--', alpha=0.5)
+                        ax_fi.set_title('Force Index (13-Day)', color='white', fontsize=10)
+                        ax_fi.set_facecolor('#0d1117'); ax_fi.tick_params(colors='#8b949e')
                         
                         fig2.patch.set_facecolor('#0d1117')
                         st.pyplot(fig2)
