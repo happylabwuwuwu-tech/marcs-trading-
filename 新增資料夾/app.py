@@ -14,15 +14,15 @@ from scipy.stats import wasserstein_distance
 warnings.filterwarnings('ignore')
 
 # =============================================================================
-# 0. 視覺核心 (星際美學)
+# 0. 視覺與訊息設計 (V75 人性化 + V74 戰神美學)
 # =============================================================================
-st.set_page_config(page_title="MARCS V74 艾爾德戰神版", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="MARCS V76 完全體", layout="wide", page_icon="🛡️")
 
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&family=Roboto+Mono:wght@400;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&family=Noto+Sans+TC:wght@400;700&display=swap');
     
-    .stApp { background-color: #050505; font-family: 'Rajdhani', sans-serif; }
+    .stApp { background-color: #050505; font-family: 'Rajdhani', 'Noto Sans TC', sans-serif; }
     
     .stApp::before {
         content: ""; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
@@ -34,41 +34,72 @@ st.markdown("""
     }
     @keyframes stars { from {transform: translateY(0);} to {transform: translateY(-1000px);} }
 
+    /* V75 借鑑 Daily Dip 的卡片設計 */
     .metric-card {
-        background: rgba(18, 18, 22, 0.75); 
-        backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-        border: 1px solid rgba(255, 165, 0, 0.15); /* Elder 喜歡暖色系提示 */
-        border-radius: 12px; padding: 20px; text-align: center;
-        box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
-        transition: all 0.3s ease;
+        background: rgba(18, 18, 22, 0.85); 
+        backdrop-filter: blur(12px);
+        border-left: 4px solid #ffae00; /* Elder Orange */
+        border-radius: 8px; padding: 15px; text-align: left;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        margin-bottom: 10px;
+        transition: transform 0.2s;
     }
-    .metric-card:hover { 
-        transform: translateY(-5px); 
-        border-color: rgba(255, 165, 0, 0.6); 
-        box-shadow: 0 0 20px rgba(255, 165, 0, 0.2);
-    }
+    .metric-card:hover { transform: translateY(-3px); border-left-color: #ffd700; }
 
-    .metric-value { color: #fff; font-size: 28px; font-weight: 700; text-shadow: 0 0 10px rgba(255,255,255,0.1); }
-    .metric-label { color: #8b949e; font-size: 12px; letter-spacing: 1px; font-family: 'Roboto Mono'; text-transform: uppercase; }
-    .metric-sub { font-size: 12px; color: #ffb86c; margin-top: 5px; font-family: 'Roboto Mono'; }
+    .highlight-val { font-size: 28px; font-weight: bold; color: #fff; text-shadow: 0 0 10px rgba(255,255,255,0.1); }
+    .highlight-lbl { font-size: 12px; color: #8b949e; letter-spacing: 1px; text-transform: uppercase;}
+    .smart-text { font-size: 14px; color: #ffb86c; font-weight: bold; margin-top: 5px; }
     
-    .stButton>button { width: 100%; border-radius: 5px; font-weight: bold; background: linear-gradient(90deg, #333 0%, #ffae00 100%); color:white; border:none;}
+    /* V75 智能點評區塊 */
+    .verdict-box {
+        padding: 20px; border-radius: 10px; text-align: center; margin-bottom: 20px;
+        box-shadow: 0 0 15px rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.1);
+    }
+    
+    .stButton>button { width: 100%; border-radius: 6px; font-weight: bold; border:none; background: linear-gradient(90deg, #333 0%, #ffae00 100%); color: white; }
 </style>
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# 1. 宏觀與資料庫
+# 1. 訊息轉譯模組 (V75 靈魂)
+# =============================================================================
+class Message_Generator:
+    @staticmethod
+    def get_verdict(ticker, hybrid_score, m_score, impact):
+        # 1. 狀態標籤
+        tag = "😐 觀望 (Hold)"
+        bg_color = "#30363d"
+        
+        if hybrid_score >= 80: 
+            tag = "🔥 強力買進 (Strong Buy)"; bg_color = "#3fb950" # Green
+        elif hybrid_score >= 60: 
+            tag = "✅ 買進 (Buy)"; bg_color = "#1f6feb" # Blue
+        elif hybrid_score <= 40: 
+            tag = "❄️ 弱勢 (Weak)"; bg_color = "#888" # Grey
+        elif hybrid_score <= 20: 
+            tag = "⛔ 危險 (Danger)"; bg_color = "#f85149" # Red
+        
+        # 2. 智能短評
+        reasons = []
+        if m_score >= 70: reasons.append("艾爾德動能強勁")
+        elif m_score <= 40: reasons.append("艾爾德動能疲弱")
+        
+        if impact > 10: reasons.append("宏觀順風 (+Macro)")
+        elif impact < -10: reasons.append("宏觀逆風 (-Macro)")
+        
+        comment = f"{ticker} 目前呈現 {tag.split(' ')[1]} 狀態。"
+        if reasons: comment += "主因：" + "，且".join(reasons) + "。"
+        else: comment += "多空力道膠著，建議耐心等待明確訊號。"
+            
+        return tag, comment, bg_color
+
+# =============================================================================
+# 2. 資料庫與宏觀 (V72 利差邏輯)
 # =============================================================================
 class Global_Market_Loader:
     @staticmethod
     def get_indices():
-        return {
-            "^VIX": {"name": "VIX 恐慌", "type": "Sentiment"},
-            "^TNX": {"name": "US10Y 殖利率", "type": "Yield"},
-            "JPY=X": {"name": "USD/JPY 匯率", "type": "Currency"},
-            "^SOX": {"name": "SOX 費半", "type": "Equity"},
-            "DX-Y.NYB": {"name": "DXY 美元", "type": "Currency"}
-        }
+        return {"^VIX": {"name": "VIX 恐慌", "type": "Sentiment"}, "^TNX": {"name": "US10Y 殖利率", "type": "Yield"}, "JPY=X": {"name": "USD/JPY 匯率", "type": "Currency"}, "^SOX": {"name": "SOX 費半", "type": "Equity"}, "DX-Y.NYB": {"name": "DXY 美元", "type": "Currency"}}
 
     @staticmethod
     def get_correlation_impact(ticker, macro_data):
@@ -86,7 +117,6 @@ class Global_Market_Loader:
             if "Bull" in dxy: impact_score -= 15
         elif "-USD" in ticker:
             if "Bull" in us10y: impact_score -= 20
-            
         return int(impact_score)
 
     @staticmethod
@@ -105,8 +135,7 @@ class Global_Market_Loader:
             if len(tickers)<50: raise Exception("Blocked")
             random.shuffle(tickers)
             return tickers
-        except:
-            return ["2330.TW", "2317.TW", "2454.TW", "2603.TW", "2382.TW", "6669.TW", "3035.TWO", "3037.TW", "2368.TW", "2881.TW", "1519.TW"]
+        except: return ["2330.TW", "2317.TW", "2454.TW", "2603.TW", "2382.TW", "6669.TW", "3035.TWO", "3037.TW", "2368.TW", "2881.TW", "1519.TW"]
 
     @staticmethod
     def get_scan_list(market_type, limit=0):
@@ -119,7 +148,7 @@ class Global_Market_Loader:
         return []
 
 # =============================================================================
-# 2. 分析引擎 (Elder 邏輯置換)
+# 3. 分析引擎 (V74 Elder 核心)
 # =============================================================================
 class Macro_Engine:
     @staticmethod
@@ -128,15 +157,11 @@ class Macro_Engine:
             df = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
             if df.empty: return None
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-            c = df['Close']
-            ma20 = c.rolling(20).mean()
-            trend = "Neutral"
-            if c.iloc[-1] > ma20.iloc[-1]: trend = "Bullish/High"
-            else: trend = "Bearish/Low"
+            c = df['Close']; ma20 = c.rolling(20).mean()
+            trend = "Bullish/High" if c.iloc[-1] > ma20.iloc[-1] else "Bearish/Low"
             return {"name": name, "price": c.iloc[-1], "trend": trend}
         except: return None
 
-# 掃描器也改用 Elder 邏輯 (MACD/Force)
 class Scanner_Engine_Elder:
     @staticmethod
     def analyze_single(ticker, min_score=60):
@@ -148,36 +173,24 @@ class Scanner_Engine_Elder:
             c = df['Close']; v = df['Volume']
             if len(v)>0 and v.iloc[-1]==0: return None
             
-            # Elder Impulse System Check
-            ema22 = c.ewm(span=22).mean() # 週線級別的日線映射
-            
-            # MACD Logic
-            ema12 = c.ewm(span=12).mean()
-            ema26 = c.ewm(span=26).mean()
-            macd = ema12 - ema26
-            signal = macd.ewm(span=9).mean()
-            hist = macd - signal
+            ema22 = c.ewm(span=22).mean()
+            ema12 = c.ewm(span=12).mean(); ema26 = c.ewm(span=26).mean()
+            macd = ema12 - ema26; signal = macd.ewm(span=9).mean(); hist = macd - signal
             
             score = 40
-            # 趨勢向上
             if c.iloc[-1] > ema22.iloc[-1]: score += 10
-            # 動能增強 (MACD Hist 變大)
             if hist.iloc[-1] > hist.iloc[-2]: score += 20
-            # 強力指標 (Force Index)
-            fi = c.diff() * v
-            fi_13 = fi.ewm(span=13).mean()
+            fi = c.diff() * v; fi_13 = fi.ewm(span=13).mean()
             if fi_13.iloc[-1] > 0: score += 10
             
             tr = pd.concat([df['High']-df['Low'], (df['High']-c.shift()).abs(), (df['Low']-c.shift()).abs()], axis=1).max(axis=1)
             atr = tr.rolling(14).mean().iloc[-1]
-            sl = max(c.iloc[-1]-2.5*atr, ema22.iloc[-1]*0.98) # 停損守 EMA22 或 ATR
+            sl = max(c.iloc[-1]-2.5*atr, ema22.iloc[-1]*0.98)
             
-            # 這裡回傳的 Key 必須小寫，對應 V68 格式
             if score < min_score: return None
             return {"ticker": ticker, "price": c.iloc[-1], "score": score, "sl": sl}
         except: return None
 
-# 深度分析引擎 (全面採用 Elder 指標)
 class Micro_Engine_Elder:
     @staticmethod
     def analyze(ticker):
@@ -188,51 +201,26 @@ class Micro_Engine_Elder:
             c = df['Close']; h = df['High']; l = df['Low']; v = df['Volume']
             score = 50; signals = []
             
-            # 1. 趨勢：EMA 22 (代表月線/趨勢線)
             ema22 = c.ewm(span=22).mean()
             if c.iloc[-1] > ema22.iloc[-1]: score += 10; signals.append("EMA趨勢向上")
             
-            # 2. 動能：MACD Histogram
-            ema12 = c.ewm(span=12).mean()
-            ema26 = c.ewm(span=26).mean()
-            macd = ema12 - ema26
-            signal = macd.ewm(span=9).mean()
-            hist = macd - signal
+            ema12 = c.ewm(span=12).mean(); ema26 = c.ewm(span=26).mean()
+            macd = ema12 - ema26; signal = macd.ewm(span=9).mean(); hist = macd - signal
             
-            # 3. 力量：Force Index
             fi = c.diff() * v
-            fi_13 = fi.ewm(span=13).mean()
-            fi_2 = fi.ewm(span=2).mean()
+            fi_13 = fi.ewm(span=13).mean(); fi_2 = fi.ewm(span=2).mean()
             
-            # 判斷 Elder 脈衝系統 (Impulse System)
-            # 綠燈：EMA 上升 且 MACD 柱狀圖 上升
             is_green = (ema22.iloc[-1] > ema22.iloc[-2]) and (hist.iloc[-1] > hist.iloc[-2])
-            
-            if is_green: 
-                score += 20
-                signals.append("🔥 Elder 綠燈 (做多)")
-            
-            # 判斷主力資金 (Force Index)
-            if fi_13.iloc[-1] > 0: 
-                score += 10
-                signals.append("主力買盤")
-            
-            # 回檔買點偵測 (趨勢向上 + 短線 Force Index < 0)
-            if (fi_13.iloc[-1] > 0) and (fi_2.iloc[-1] < 0) and is_green:
-                score += 15
-                signals.append("✨ 完美回檔買點")
+            if is_green: score += 20; signals.append("🔥 Elder 綠燈")
+            if fi_13.iloc[-1] > 0: score += 10; signals.append("主力買盤")
+            if (fi_13.iloc[-1] > 0) and (fi_2.iloc[-1] < 0) and is_green: score += 15; signals.append("✨ 完美回檔買點")
 
-            # 準備繪圖數據
             atr = (h-l).rolling(14).mean()
             k_upper = ema22 + 2.0 * atr.rolling(10).mean()
             k_lower = ema22 - 2.0 * atr.rolling(10).mean()
             
-            df['EMA22'] = ema22
-            df['MACD_Hist'] = hist
-            df['Force_Index'] = fi_13
-            df['K_Upper'] = k_upper
-            df['K_Lower'] = k_lower
-            
+            df['EMA22'] = ema22; df['MACD_Hist'] = hist; df['Force_Index'] = fi_13
+            df['K_Upper'] = k_upper; df['K_Lower'] = k_lower
             return score, signals, df, atr.iloc[-1]
         except: return 50, [], pd.DataFrame(), 0
 
@@ -244,15 +232,13 @@ class Risk_Manager:
         elif any(x in ticker for x in [".TW", ".TWO"]): vol_cap = 0.5; atype = "TW Stock"
         else: vol_cap = 0.6; atype = "US Stock"
         
-        risk = capital * 0.02
-        dist = price - sl
+        risk = capital * 0.02; dist = price - sl
         if dist <= 0: return 0, {}
         
         conf = hybrid_score / 100.0
         size = int((risk/dist) * (0.5 if vol_cap>0.8 else 1.0) * conf)
         if vol_cap > 0.8: size = round((risk/dist)*0.5*conf, 4)
         
-        # 百分比建議
         position_value = size * price
         pct_capital = (position_value / capital) * 100
         if pct_capital > 50: 
@@ -302,7 +288,7 @@ def main():
     video_file = "demo.mp4"
     if os.path.exists(video_file): st.sidebar.video(video_file)
 
-    st.markdown("<h1 style='text-align:center; color:#ffae00; text-shadow: 0 0 10px rgba(255,174,0,0.5);'>🛡️ MARCS V74 艾爾德戰神版</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align:center; color:#ffae00; text-shadow: 0 0 10px rgba(255,174,0,0.5);'>🛡️ MARCS V76 完全體</h1>", unsafe_allow_html=True)
 
     if "scan_results" not in st.session_state: st.session_state.scan_results = []
     if "macro_data" not in st.session_state: st.session_state.macro_data = {}
@@ -325,20 +311,26 @@ def main():
                     clr = "#f85149" if is_bad else "#3fb950"
                     with cols[idx]:
                         st.markdown(f"""<div class="metric-card" style="border-top:2px solid {clr}">
-                            <div class="metric-label">{r['name']}</div>
-                            <div class="metric-value" style="font-size:20px">{r['price']:.2f}</div>
+                            <div class="highlight-lbl">{r['name']}</div>
+                            <div class="highlight-val" style="font-size:20px">{r['price']:.2f}</div>
                             <div class="metric-sub" style="color:{clr}">{r['trend']}</div>
                         </div>""", unsafe_allow_html=True)
                     idx += 1
             st.session_state.macro_data = macro_res
 
-    # ZONE 2: Scanner Result
+    # ZONE 2: Spotlight (V75 Feature)
     if st.session_state.scan_results:
-        with st.expander("🔭 掃描結果列表"):
+        st.markdown("### 🔥 今日焦點 (Top Picks)")
+        top_3 = st.session_state.scan_results[:3]
+        cols = st.columns(len(top_3))
+        for i, stock in enumerate(top_3):
+            with cols[i]:
+                if st.button(f"{stock['ticker']} (Score: {stock['score']})", key=f"btn_{i}"):
+                    st.session_state.target = stock['ticker']
+        
+        with st.expander("🔭 完整掃描列表"):
             df = pd.DataFrame(st.session_state.scan_results)
             st.dataframe(df[['ticker', 'score', 'price', 'sl']], use_container_width=True)
-            sel = st.selectbox("選擇分析:", [r['ticker'] for r in st.session_state.scan_results])
-            if st.button("分析選定標的"): st.session_state.target = sel
 
     # ZONE 3: Report
     target = st.session_state.target
@@ -347,9 +339,7 @@ def main():
         st.markdown(f"### 🎯 深度戰略分析: {target}")
         
         with st.spinner(f"Applying Triple Screen Analysis for {target}..."):
-            # 使用新的 Elder 引擎
             m_score, sigs, df_m, atr = Micro_Engine_Elder.analyze(target)
-            
             impact = 0
             if st.session_state.macro_data:
                 impact = Global_Market_Loader.get_correlation_impact(target, st.session_state.macro_data)
@@ -365,16 +355,25 @@ def main():
             if curr_p > 0:
                 size, dets = Risk_Manager.calculate(capital, curr_p, sl_p, target, hybrid)
                 
-                # --- 卡片顯示 ---
+                # --- V75 智能點評區塊 ---
+                tag, comment, bg_color = Message_Generator.get_verdict(target, hybrid, m_score, impact)
+                st.markdown(f"""
+                <div class="verdict-box" style="background:{bg_color}30; border-color:{bg_color}">
+                    <h2 style="margin:0; color:{bg_color}; text-shadow:0 0 10px {bg_color}80;">{tag}</h2>
+                    <p style="margin-top:10px; font-size:18px; color:#e6edf3;">{comment}</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # --- 卡片顯示 (V75 Style) ---
                 c1, c2, c3, c4 = st.columns(4)
-                with c1: st.markdown(f"""<div class="metric-card"><div class="metric-label">艾爾德評分</div><div class="metric-value">{m_score}</div><div class="metric-sub">{', '.join(sigs) if sigs else '盤整'}</div></div>""", unsafe_allow_html=True)
+                with c1: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">艾爾德評分</div><div class="highlight-val">{m_score}</div><div class="smart-text">{', '.join(sigs) if sigs else '盤整'}</div></div>""", unsafe_allow_html=True)
                 with c2: 
                     clr = "#3fb950" if impact>0 else "#f85149"
-                    st.markdown(f"""<div class="metric-card"><div class="metric-label">宏觀修正</div><div class="metric-value" style="color:{clr}">{impact}</div></div>""", unsafe_allow_html=True)
-                with c3: st.markdown(f"""<div class="metric-card" style="border-color:#ffae00"><div class="metric-label">綜合總分</div><div class="metric-value" style="color:#ffae00">{hybrid}</div></div>""", unsafe_allow_html=True)
-                with c4: st.markdown(f"""<div class="metric-card"><div class="metric-label">建議倉位 %</div><div class="metric-value">{dets['pct']}%</div><div class="metric-sub">{size} 股 (${dets['cap']:,})</div></div>""", unsafe_allow_html=True)
+                    st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">宏觀修正</div><div class="highlight-val" style="color:{clr}">{impact}</div></div>""", unsafe_allow_html=True)
+                with c3: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">綜合總分</div><div class="highlight-val" style="color:#ffae00">{hybrid}</div></div>""", unsafe_allow_html=True)
+                with c4: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">建議倉位 %</div><div class="highlight-val">{dets['pct']}%</div><div class="smart-text">${dets['cap']:,}</div></div>""", unsafe_allow_html=True)
                 
-                # --- 圖表區 (Elder Style) ---
+                # --- 圖表區 (V74 Elder Style) ---
                 st.markdown("#### 📊 戰術圖表 (Tactical Chart)")
                 tab1, tab2 = st.tabs(["🕯️ Keltner 主圖", "🌊 MACD & Force Index (籌碼)"])
                 
@@ -382,7 +381,7 @@ def main():
                     fig, ax = plt.subplots(figsize=(12, 5))
                     sub = df_m.tail(120)
                     ax.plot(sub.index, sub['Close'], color='#e6edf3', lw=1.5, label='Price')
-                    ax.plot(sub.index, sub['EMA22'], color='#ffae00', lw=1.5, label='EMA 22 (Trend)') # Elder 的趨勢線
+                    ax.plot(sub.index, sub['EMA22'], color='#ffae00', lw=1.5, label='EMA 22 (Trend)')
                     ax.plot(sub.index, sub['K_Upper'], color='#00f2ff', ls='--', alpha=0.3)
                     ax.plot(sub.index, sub['K_Lower'], color='#00f2ff', ls='--', alpha=0.3)
                     ax.fill_between(sub.index, sub['K_Upper'], sub['K_Lower'], color='#00f2ff', alpha=0.05)
@@ -397,15 +396,12 @@ def main():
                         fig2, (ax_macd, ax_fi) = plt.subplots(2, 1, figsize=(12, 6), sharex=True, height_ratios=[1, 1])
                         sub_ind = df_m.tail(120)
                         
-                        # 1. MACD Histogram (Green/Red)
-                        # 如果 hist > prev_hist 畫綠色，否則紅色
                         hist = sub_ind['MACD_Hist']
                         colors = ['#3fb950' if hist.iloc[i] > hist.iloc[i-1] else '#f85149' for i in range(len(hist))]
                         ax_macd.bar(sub_ind.index, hist, color=colors, alpha=0.9)
                         ax_macd.set_title('MACD Histogram (Momentum)', color='white', fontsize=10)
                         ax_macd.set_facecolor('#0d1117'); ax_macd.tick_params(colors='#8b949e')
                         
-                        # 2. Force Index
                         ax_fi.plot(sub_ind.index, sub_ind['Force_Index'], color='#00f2ff', lw=1.5)
                         ax_fi.axhline(0, color='gray', ls='--', alpha=0.5)
                         ax_fi.set_title('Force Index (13-Day)', color='white', fontsize=10)
