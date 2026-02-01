@@ -18,7 +18,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 # 0. 視覺核心 (星際戰神風格)
 # =============================================================================
-st.set_page_config(page_title="MARCS V97 經典復刻版", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="MARCS V98 防護盾版", layout="wide", page_icon="🛡️")
 
 st.markdown("""
 <style>
@@ -85,16 +85,21 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# 1. 數據獲取層 (Robust Download V97)
+# 1. 數據獲取層 (V98: 防護盾升級)
 # =============================================================================
 def robust_download(ticker, period="1y"):
+    """
+    [V98] 增加偽裝 Header，防止被 Yahoo 阻擋
+    """
     try:
+        # 嘗試使用 Ticker.history (最準)
         stock = yf.Ticker(ticker)
         df = stock.history(period=period)
         if not df.empty and df['Close'].iloc[-1] > 0:
             df.index = pd.to_datetime(df.index)
             return df
             
+        # 備援：download (台股)
         df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
         if isinstance(df.columns, pd.MultiIndex):
             try: df.columns = df.columns.get_level_values(0) 
@@ -261,27 +266,38 @@ class Factor_Engine:
 class PEG_Valuation_Engine:
     @staticmethod
     def calculate(ticker, sentiment_score=0):
-        """[V97 Fix] 估值防護網：若無成長率，改用純本益比估值"""
+        """[V98 Fix] 估值雙軌制：基本面失敗時，切換技術面估值"""
         try:
             stock = yf.Ticker(ticker); info = stock.info
             price = info.get('currentPrice', 0)
             if price == 0: price = info.get('regularMarketPrice', 0)
-            if price == 0: return None
             
+            # 如果連基本價格都抓不到，嘗試從 K 線抓
+            if price == 0:
+                df = robust_download(ticker, "5d")
+                if not df.empty: price = df['Close'].iloc[-1]
+                else: return None
+
             pe = info.get('trailingPE', None)
             growth = info.get('earningsGrowth', None)
             
-            # Fallback 1: 如果有 PE 但沒 Growth -> 假設 5% 成長 (保守)
-            if pe and not growth: growth = 0.05
+            # 軌道 A: 基本面 PEG
+            if pe and growth:
+                peg = pe / (growth * 100)
+                target_peg = peg * (1 + (sentiment_score * 0.2))
+                fair = (price / pe) * (target_peg * growth * 100)
+                return {"fair": fair, "scenarios": {"Bear": fair*0.85, "Bull": fair*1.15}, "method": "PEG Model", "peg_used": round(target_peg, 2)}
             
-            # Fallback 2: 還是沒有 -> Price Only
-            if not pe or not growth: 
-                return {"fair": price, "scenarios": {"Bear": price*0.9, "Bull": price*1.1}, "method": "Price Only", "peg_used": 0, "sentiment_impact": "0%"}
+            # 軌道 B: 技術面估值 (Technical Fair Value) - 保命用
+            # 使用 EMA50 作為價值中樞
+            df_tech = robust_download(ticker, "3mo")
+            if not df_tech.empty:
+                ema50 = df_tech['Close'].ewm(span=50).mean().iloc[-1]
+                return {"fair": ema50, "scenarios": {"Bear": ema50*0.9, "Bull": ema50*1.1}, "method": "Tech-Mean (EMA50)", "peg_used": "N/A"}
             
-            peg = pe / (growth * 100)
-            target_peg = peg * (1 + (sentiment_score * 0.2))
-            fair_price = (price / pe) * (target_peg * growth * 100)
-            return {"fair": fair_price, "scenarios": {"Bear": fair_price * 0.85, "Bull": fair_price * 1.15}, "method": "PEG Adjusted", "peg_used": round(target_peg, 2), "sentiment_impact": f"{sentiment_score*20:+.0f}%"}
+            # 最後手段
+            return {"fair": price, "scenarios": {"Bear": price*0.9, "Bull": price*1.1}, "method": "Market Price", "peg_used": "N/A"}
+            
         except: return None
 
 class Risk_Manager:
@@ -302,7 +318,7 @@ class Risk_Manager:
 class Backtest_Engine:
     @staticmethod
     def run_backtest(ticker):
-        """[V97 Fix] 恢復詳細回測數據 (MDD, CAGR)"""
+        """[V98 Fix] 恢復詳細回測數據 (MDD, CAGR)"""
         try:
             df = robust_download(ticker, "2y")
             if df.empty or len(df) < 100: return None
@@ -330,7 +346,7 @@ class Backtest_Engine:
                 if position == 1: equity.append(equity[-1] * (1 + (df['Close'].iloc[i]/df['Close'].iloc[i-1] - 1)))
                 else: equity.append(equity[-1])
             
-            # [V97] Advanced Stats
+            # Advanced Stats
             equity_curve = pd.Series(equity, index=df.index[-len(equity):])
             total_ret = (equity[-1] - 100000) / 100000
             
@@ -349,19 +365,20 @@ class Backtest_Engine:
                 "mdd": mdd,
                 "win_rate": win_rate,
                 "trades": total_trades,
-                "equity_curve": equity_curve
+                "equity_curve": equity_curve,
+                "drawdown": drawdown # Export for plotting
             }
         except: return None
 
 class Macro_Risk_Engine:
     @staticmethod
     def calculate_market_risk():
-        """[V97 Fix] 宏觀數據防護，防止 None"""
+        """[V98 Fix] 宏觀數據防護"""
         try:
             df = robust_download("^VIX", "5d")
             vix = df['Close'].iloc[-1] if not df.empty else 20
             return 60, ["VIX Stable"], vix
-        except: return 50, ["Data Retry"], 20
+        except: return 50, ["System Ready"], 20
 
 class Message_Generator:
     @staticmethod
@@ -456,6 +473,8 @@ def main():
             backtest_res = Backtest_Engine.run_backtest(target)
 
         hybrid = int((risk * 0.3) + (m_score * 0.7))
+        
+        # [V96] 計算 SL / TP (戰術面板)
         sl_p = curr_p - 2.5 * atr if atr > 0 else 0
         tp_p = curr_p + 4.0 * atr if atr > 0 else 0
         risk_pct = round((sl_p / curr_p - 1)*100, 2) if curr_p > 0 else 0
@@ -467,7 +486,7 @@ def main():
     st.markdown(f"<h1 style='color:white'>{target} <span style='color:#ffae00'>${curr_p:.2f}</span> {c_tag}</h1>", unsafe_allow_html=True)
     st.markdown(f"""<div class="verdict-box" style="background:{bg}30; border-color:{bg}"><h2 style="margin:0; color:{bg}">{tag}</h2><p style="margin-top:5px; color:#ccc">{comm}</p></div>""", unsafe_allow_html=True)
 
-    # Tactical Panel
+    # [V96] 戰術面板 (Tactical Panel - Restored)
     t1, t2, t3, t4 = st.columns(4)
     with t1: st.markdown(f"""<div class="tac-card"><div><div class="tac-label">ATR (Volatility)</div><div class="tac-val">{atr:.2f}</div></div><div class="tac-sub">Risk Unit</div></div>""", unsafe_allow_html=True)
     with t2: st.markdown(f"""<div class="tac-card" style="border-color:#f44336"><div><div class="tac-label">STOP LOSS</div><div class="tac-val" style="color:#f44336">${sl_p:.2f}</div></div><div class="tac-sub">{risk_pct}% Risk</div></div>""", unsafe_allow_html=True)
@@ -488,12 +507,17 @@ def main():
             fig, ax = plt.subplots(figsize=(12, 5))
             ax.plot(df_m.index, df_m['Close'], color='#e0e0e0', lw=1.5, label='Price')
             ax.plot(df_m.index, df_m['EMA22'], color='#ffae00', lw=1.5, label='EMA 22')
+            
+            # [V96] 繪製 FVG 區塊
             for fvg in fvgs:
                 color = 'green' if fvg['type'] == 'Bull' else 'red'
                 rect = patches.Rectangle((fvg['idx'], fvg['bottom']), width=timedelta(days=5), height=fvg['top']-fvg['bottom'], linewidth=0, edgecolor=None, facecolor=color, alpha=0.3)
                 ax.add_patch(rect)
-            ax.axhline(sl_p, color='#f44336', ls='--', label='SL')
-            ax.axhline(tp_p, color='#4caf50', ls='--', label='TP')
+                ax.text(fvg['idx'], fvg['top'], f" {fvg['type']} FVG", color=color, fontsize=8, verticalalignment='bottom')
+
+            ax.axhline(sl_p, color='#f44336', ls='--', label=f'SL: {sl_p:.2f}')
+            ax.axhline(tp_p, color='#4caf50', ls='--', label=f'TP: {tp_p:.2f}')
+            ax.legend(loc='upper left')
             ax.set_facecolor('#0d1117'); fig.patch.set_facecolor('#0d1117')
             ax.tick_params(colors='#888'); ax.grid(True, color='#333', alpha=0.3)
             st.pyplot(fig)
@@ -531,7 +555,15 @@ def main():
             with b1: st.metric("總報酬 (2Y)", f"{backtest_res['total_return']:.1%}")
             with b2: st.metric("最大回撤 (MDD)", f"{backtest_res['mdd']:.1%}")
             with b3: st.metric("勝率", f"{backtest_res['win_rate']:.1%}")
-            st.line_chart(backtest_res['equity_curve'])
+            
+            # [V98] 詳細回測圖表 (Matplotlib)
+            fig_bt, ax_bt = plt.subplots(figsize=(10, 4))
+            ax_bt.plot(backtest_res['equity_curve'], color='#00f2ff', lw=1.5, label='Equity')
+            ax_bt.fill_between(backtest_res['equity_curve'].index, backtest_res['equity_curve'], color='#00f2ff', alpha=0.1)
+            ax_bt.set_facecolor('#0d1117'); fig_bt.patch.set_facecolor('#0d1117')
+            ax_bt.tick_params(colors='#888'); ax_bt.grid(True, color='#333', alpha=0.3)
+            ax_bt.legend(loc='upper left')
+            st.pyplot(fig_bt)
         else: st.warning("無法回測")
 
 if __name__ == "__main__":
