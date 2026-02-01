@@ -10,26 +10,109 @@ warnings.filterwarnings('ignore')
 
 # 設定網頁配置
 st.set_page_config(
-    page_title="MARCS V55 全景戰情室",
+    page_title="MARCS V57 星際戰情室",
     layout="wide",
-    page_icon="🛡️",
+    page_icon="🌌",
     initial_sidebar_state="expanded"
 )
 
-# 自定義 CSS
+# =============================================================================
+# 0. CSS 視覺魔法 (星空 + 科技感)
+# =============================================================================
 st.markdown("""
 <style>
-    .stApp {background-color: #0e1117;}
-    .metric-card {background-color: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 15px; text-align: center;}
-    .metric-label {color: #8b949e; font-size: 12px; margin-bottom: 5px;}
-    .metric-value {color: #ffffff; font-size: 20px; font-weight: bold;}
-    .metric-sub {font-size: 11px; margin-top: 5px;}
-    .macro-box {padding: 10px; border-radius: 5px; text-align: center; margin-bottom: 5px;}
-    h1, h2, h3 {font-family: 'Roboto', sans-serif;}
+    /* 1. 全局字體與背景設置 */
+    @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&family=Rajdhani:wght@500;700&display=swap');
+    
+    .stApp {
+        background-color: #050505;
+        font-family: 'Rajdhani', sans-serif;
+    }
+
+    /* 2. 動態星空背景 (使用 CSS 徑向漸層模擬星星) */
+    .stApp::before {
+        content: "";
+        position: fixed;
+        top: 0; left: 0; width: 100%; height: 100%;
+        background-image: 
+            radial-gradient(white, rgba(255,255,255,.2) 2px, transparent 3px),
+            radial-gradient(white, rgba(255,255,255,.15) 1px, transparent 2px),
+            radial-gradient(white, rgba(255,255,255,.1) 2px, transparent 3px);
+        background-size: 550px 550px, 350px 350px, 250px 250px;
+        background-position: 0 0, 40px 60px, 130px 270px;
+        animation: stars 120s linear infinite;
+        z-index: -1;
+        opacity: 0.8;
+    }
+
+    @keyframes stars {
+        from {transform: translateY(0);}
+        to {transform: translateY(-1000px);}
+    }
+
+    /* 3. 科技感毛玻璃卡片 (Glassmorphism) */
+    .metric-card {
+        background: rgba(22, 27, 34, 0.6); /* 半透明黑 */
+        backdrop-filter: blur(12px);         /* 毛玻璃模糊 */
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(88, 166, 255, 0.2); /* 科技藍邊框 */
+        border-radius: 12px;
+        padding: 20px;
+        text-align: center;
+        box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+    
+    .metric-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 0 20px rgba(88, 166, 255, 0.4); /* 懸浮發光 */
+        border-color: rgba(88, 166, 255, 0.8);
+    }
+
+    /* 4. 文字霓虹特效 */
+    .metric-label {
+        color: #8b949e; 
+        font-size: 14px; 
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        font-family: 'Roboto Mono', monospace;
+    }
+    .metric-value {
+        color: #ffffff; 
+        font-size: 28px; 
+        font-weight: 700;
+        text-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+    }
+    .metric-sub {
+        font-size: 12px; 
+        margin-top: 8px;
+        font-family: 'Roboto Mono', monospace;
+    }
+
+    /* 5. 側邊欄優化 */
+    [data-testid="stSidebar"] {
+        background-color: rgba(13, 17, 23, 0.9);
+        backdrop-filter: blur(10px);
+        border-right: 1px solid rgba(48, 54, 61, 0.5);
+    }
+    
+    /* 6. 按鈕科技化 */
+    div.stButton > button {
+        background: linear-gradient(90deg, #1f6feb 0%, #00f2ff 100%);
+        color: black;
+        font-weight: bold;
+        border: none;
+        border-radius: 4px;
+        transition: all 0.3s;
+    }
+    div.stButton > button:hover {
+        box-shadow: 0 0 15px rgba(0, 242, 255, 0.6);
+        color: white;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# 兼容性處理 (Wasserstein Distance)
+# 兼容性處理
 try:
     from scipy.stats import wasserstein_distance
 except ImportError:
@@ -39,16 +122,16 @@ except ImportError:
         return np.mean(np.abs(u_values - v_values))
 
 # =============================================================================
-# 1. 資產定義 (宏觀 + 交易標的)
+# 1. 資產定義
 # =============================================================================
 class Global_Index_List:
     @staticmethod
     def get_macro_indices():
         return {
-            "^VIX": {"name": "恐慌指數 (VIX)", "type": "Sentiment"},
-            "DX-Y.NYB": {"name": "美元指數 (DXY)", "type": "Currency"},
-            "TLT": {"name": "美債20年 (TLT)", "type": "Rates"},
-            "JPY=X": {"name": "日圓 (JPY)", "type": "Currency"}
+            "^VIX": {"name": "VIX 恐慌指數", "type": "Sentiment"},
+            "DX-Y.NYB": {"name": "DXY 美元指數", "type": "Currency"},
+            "TLT": {"name": "TLT 美債20年", "type": "Rates"},
+            "JPY=X": {"name": "JPY 日圓", "type": "Currency"}
         }
 
     @staticmethod
@@ -63,7 +146,7 @@ class Global_Index_List:
         }
 
 # =============================================================================
-# 2. 宏觀引擎 (處理 VIX, DXY 等)
+# 2. 宏觀引擎
 # =============================================================================
 class Macro_Engine:
     @staticmethod
@@ -74,30 +157,23 @@ class Macro_Engine:
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             
             c = df['Close']
-            
-            # 1. RSI
             delta = c.diff()
             gain = (delta.where(delta > 0, 0)).rolling(14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
             rs = gain / loss
             rsi = 100 - (100 / (1 + rs)).iloc[-1]
             
-            # 2. Chaos (Wasserstein)
             returns = np.log(c).diff().dropna()
             if len(returns) < 40: return None
             curr_w2 = wasserstein_distance(returns.tail(20), returns.iloc[-40:-20])
             hist_std = returns.rolling(40).std().mean() * 0.1
             chaos = curr_w2 / (hist_std + 1e-9)
             
-            # 3. Trend Status
             trend = "Neutral"
             if rsi > 70: trend = "Overbought"
             elif rsi < 30: trend = "Oversold"
             
-            return {
-                "ticker": ticker, "name": name, 
-                "price": c.iloc[-1], "rsi": rsi, "chaos": chaos, "trend": trend
-            }
+            return {"ticker": ticker, "name": name, "price": c.iloc[-1], "rsi": rsi, "chaos": chaos, "trend": trend}
         except: return None
 
     @staticmethod
@@ -105,26 +181,20 @@ class Macro_Engine:
         score = 50.0
         data_map = {r['ticker']: r for r in results if r}
         
-        # VIX: 高=恐慌(加分), 低=貪婪(扣分)
         vix = data_map.get('^VIX')
         if vix:
             if vix['trend'] == 'Overbought': score += 15
             elif vix['trend'] == 'Oversold': score -= 15
             
-        # DXY: 高=資金緊縮(扣分), 低=寬鬆(加分)
         dxy = data_map.get('DX-Y.NYB')
         if dxy:
             if dxy['trend'] == 'Overbought': score -= 12
             elif dxy['trend'] == 'Oversold': score += 12
             
-        # TLT: 低=利率高(扣分)
-        tlt = data_map.get('TLT')
-        if tlt and tlt['trend'] == 'Oversold': score -= 8
-            
         return min(100, max(0, score))
 
 # =============================================================================
-# 3. 微觀引擎 & 反脆弱資金管理 (V54 核心)
+# 3. 微觀引擎 & 風控
 # =============================================================================
 class Micro_Structure_Engine:
     @staticmethod
@@ -133,22 +203,19 @@ class Micro_Structure_Engine:
         c, h, l, v = df['Close'], df['High'], df['Low'], df['Volume']
         score = 50; signals = []
         
-        # Keltner
         ema20 = c.ewm(span=20).mean()
         tr = pd.concat([h-l, (h-c.shift()).abs(), (l-c.shift()).abs()], axis=1).max(axis=1)
         atr10 = tr.rolling(10).mean()
         k_upper = ema20 + 2.0 * atr10
         k_lower = ema20 - 2.0 * atr10
         
-        if c.iloc[-1] > k_upper.iloc[-1]: score += 15; signals.append("肯特納突破")
-        elif c.iloc[-1] < k_lower.iloc[-1]: score -= 15; signals.append("肯特納跌破")
+        if c.iloc[-1] > k_upper.iloc[-1]: score += 15; signals.append("Keltner Breakout")
+        elif c.iloc[-1] < k_lower.iloc[-1]: score -= 15; signals.append("Keltner Breakdown")
 
-        # R-Breaker
-        if c.iloc[-1] > c.iloc[-2] * 1.015: score += 5; signals.append("強勢紅K")
+        if c.iloc[-1] > c.iloc[-2] * 1.015: score += 5; signals.append("Power Candle")
         
-        # OBV
         obv = (np.sign(c.diff()) * v).fillna(0).cumsum()
-        if obv.iloc[-1] > obv.rolling(20).mean().iloc[-1]: score += 5; signals.append("OBV多方")
+        if obv.iloc[-1] > obv.rolling(20).mean().iloc[-1]: score += 5; signals.append("OBV Bullish")
 
         indicators = pd.DataFrame({'EMA20': ema20, 'K_Upper': k_upper, 'K_Lower': k_lower}, index=df.index)
         return min(100, max(0, score)), signals, indicators
@@ -236,137 +303,118 @@ class MARCS_Backtester:
         return pd.DataFrame(equity), pd.DataFrame(trades)
 
 # =============================================================================
-# 5. 主程式 (Streamlit UI)
+# 5. 主介面 (V57 Starfield Edition)
 # =============================================================================
 def main():
-    st.sidebar.markdown("## ⚙️ 參數設定")
-    ticker = st.sidebar.text_input("交易代碼 (Ticker)", value="BTC-USD")
-    capital = st.sidebar.number_input("初始本金 (Capital)", value=1000000, step=100000)
+    st.sidebar.markdown("## ⚙️ 系統控制台")
+    ticker = st.sidebar.text_input("TARGET", value="BTC-USD")
+    capital = st.sidebar.number_input("CAPITAL", value=1000000, step=100000)
     
-    st.title("🛡️ MARCS V55 全景戰情室")
+    st.sidebar.markdown("---")
+    # 請替換為你的 GitHub Raw Video URL
+    video_url = "https://raw.githubusercontent.com/YOUR_NAME/YOUR_REPO/main/model_arch.mp4.mp4" 
+    st.sidebar.markdown("### 🎥 系統架構演示")
+    try: st.sidebar.video(video_url)
+    except: st.sidebar.info("https://github.com/happylabwuwuwu-tech/marcs-trading-/blob/main/%E6%96%B0%E5%A2%9E%E8%B3%87%E6%96%99%E5%A4%BE/model_arch.mp4.mp4")
+
+    # 標題區
+    st.markdown("<h1 style='text-align: center; color: #00f2ff; text-shadow: 0 0 10px #00f2ff;'>🛡️ MARCS V57 INTERSTELLAR</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #8b949e; letter-spacing: 2px;'>QUANTUM MACRO INTELLIGENCE SYSTEM</p>", unsafe_allow_html=True)
     
-    if st.sidebar.button("🚀 啟動全域掃描", type="primary"):
-        # --- PART 1: 宏觀儀表板 (Macro Dashboard) ---
-        st.markdown("### 1. 全球宏觀天候 (The Weather)")
-        
+    if st.sidebar.button("🚀 INITIATE SCAN", type="primary"):
+        # 1. 宏觀儀表板
+        st.markdown("### 📡 MACRO METRICS")
         macro_indices = Global_Index_List.get_macro_indices()
         macro_results = []
-        
-        # 使用 4 列佈局
         cols = st.columns(4)
         
         for idx, (sym, info) in enumerate(macro_indices.items()):
             res = Macro_Engine.analyze(sym, info['name'])
             macro_results.append(res)
-            
             if res:
                 col = cols[idx % 4]
-                # 顏色邏輯
-                status_color = "#8b949e"
-                if res['trend'] == 'Overbought': status_color = "#f85149" # 紅
-                elif res['trend'] == 'Oversold': status_color = "#3fb950" # 綠
-                
-                chaos_mark = "⚡" if res['chaos'] > 1.2 else ""
-                
+                color = "#f85149" if res['trend'] == 'Overbought' else ("#3fb950" if res['trend'] == 'Oversold' else "#8b949e")
+                chaos_mk = "⚡" if res['chaos'] > 1.2 else ""
                 with col:
                     st.markdown(f"""
-                    <div class="metric-card" style="border-top: 3px solid {status_color}">
+                    <div class="metric-card" style="border-top: 2px solid {color}">
                         <div class="metric-label">{res['name']}</div>
                         <div class="metric-value">{res['price']:.2f}</div>
-                        <div class="metric-sub" style="color:{status_color}">{res['trend']} (RSI: {res['rsi']:.0f})</div>
-                        <div class="metric-sub">Chaos: {res['chaos']:.2f} {chaos_mark}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                        <div class="metric-sub" style="color:{color}">{res['trend']}</div>
+                        <div class="metric-sub">Chaos: {res['chaos']:.2f} {chaos_mk}</div>
+                    </div>""", unsafe_allow_html=True)
 
-        # 計算宏觀總分
-        mmi_score = Macro_Engine.calculate_macro_score(macro_results)
-        mmi_color = "#3fb950" if mmi_score > 60 else ("#f85149" if mmi_score < 40 else "#d2a8ff")
-        
-        st.markdown(f"""
-        <div style="background:#161b22; padding:10px; border-radius:5px; margin: 15px 0; text-align:center;">
-            <span style="color:#8b949e">MARCS 宏觀風險偏好指數 (MMI): </span>
-            <span style="font-size:24px; font-weight:bold; color:{mmi_color}">{mmi_score:.1f}</span>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # --- PART 2: 個股微觀與回測 (Individual Analysis) ---
-        st.markdown(f"### 2. 標的深度分析: {ticker} (The Ship)")
-        
+        # 2. 個股分析
+        st.markdown(f"### 🔭 TARGET ANALYSIS: {ticker}")
         bt = MARCS_Backtester(ticker, capital)
-        with st.spinner(f"正在分析 {ticker} 微觀結構..."):
+        
+        with st.spinner("Decodin Market Structure..."):
             if bt.fetch_data():
                 df_equity, df_trades = bt.run()
-                score_now, signals_now, indicators = Micro_Structure_Engine.analyze(bt.df)
+                score, signals, indicators = Micro_Structure_Engine.analyze(bt.df)
                 
-                # 計算即時建議
-                last_row = bt.df.iloc[-1]
-                curr_price = last_row['Close']
-                sl_price = curr_price - 2.5 * last_row['ATR']
-                size_now, details_now = Antifragile_Position_Sizing.calculate_size(
-                    capital, curr_price, sl_price, 0.8, bt.vol_cap
-                )
+                last = bt.df.iloc[-1]
+                curr_p = last['Close']
+                sl_p = curr_p - 2.5 * last['ATR']
+                size, details = Antifragile_Position_Sizing.calculate_size(capital, curr_p, sl_p, 0.8, bt.vol_cap)
                 
-                # 顯示三欄位資訊
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                     st.markdown(f"""<div class="metric-card">
-                        <div class="metric-label">微觀評分 (Micro)</div>
-                        <div class="metric-value" style="color:{'#3fb950' if score_now>60 else '#f85149'}">{score_now}</div>
-                        <div class="metric-sub">{', '.join(signals_now) if signals_now else '盤整'}</div>
+                    st.markdown(f"""<div class="metric-card">
+                        <div class="metric-label">MICRO SCORE</div>
+                        <div class="metric-value" style="color:{'#3fb950' if score>60 else '#f85149'}">{score}</div>
+                        <div class="metric-sub">{', '.join(signals) if signals else 'NEUTRAL'}</div>
                     </div>""", unsafe_allow_html=True)
                 with c2:
                     st.markdown(f"""<div class="metric-card">
-                        <div class="metric-label">Taleb 建議倉位</div>
-                        <div class="metric-value">{details_now.get('final_capital', 0)//int(curr_price) if curr_price else 0} 單位</div>
-                        <div class="metric-sub">Taleb 係數: {details_now.get('taleb_factor', 1.0)}x</div>
+                        <div class="metric-label">TALEB SIZE</div>
+                        <div class="metric-value">{details.get('final_capital', 0)//int(curr_p) if curr_p else 0}</div>
+                        <div class="metric-sub" style="color:#00f2ff">Factor: {details.get('taleb_factor', 1.0)}x</div>
                     </div>""", unsafe_allow_html=True)
                 with c3:
                     ret = 0
                     if not df_equity.empty:
                         ret = (df_equity['Equity'].iloc[-1] - df_equity['Equity'].iloc[0]) / df_equity['Equity'].iloc[0] * 100
                     st.markdown(f"""<div class="metric-card">
-                        <div class="metric-label">2年回測報酬</div>
+                        <div class="metric-label">2Y RETURN</div>
                         <div class="metric-value" style="color:{'#3fb950' if ret>0 else '#f85149'}">{ret:.1f}%</div>
-                        <div class="metric-sub">交易次數: {len(df_trades)}</div>
+                        <div class="metric-sub">Trades: {len(df_trades)}</div>
                     </div>""", unsafe_allow_html=True)
-                
-                # 圖表區
-                st.markdown("#### 策略回測圖表")
-                tab1, tab2 = st.tabs(["🕯️ Keltner 通道訊號", "📈 資金權益曲線"])
+
+                # 圖表
+                st.markdown("#### 📊 TACTICAL VISUALIZATION")
+                tab1, tab2 = st.tabs(["CHART", "EQUITY"])
                 
                 with tab1:
                     fig1, ax1 = plt.subplots(figsize=(12, 5))
-                    plot_df = bt.df.tail(150); plot_ind = indicators.tail(150)
-                    ax1.plot(plot_df.index, plot_df['Close'], color='white', lw=1, label='Price')
-                    ax1.plot(plot_ind.index, plot_ind['K_Upper'], color='#00f2ff', ls='--', alpha=0.5, label='Upper')
-                    ax1.plot(plot_ind.index, plot_ind['K_Lower'], color='#00f2ff', ls='--', alpha=0.5, label='Lower')
-                    ax1.fill_between(plot_ind.index, plot_ind['K_Upper'], plot_ind['K_Lower'], color='#00f2ff', alpha=0.05)
+                    p_df = bt.df.tail(150); p_ind = indicators.tail(150)
+                    ax1.plot(p_df.index, p_df['Close'], color='#e6edf3', lw=1.5)
+                    ax1.plot(p_ind.index, p_ind['K_Upper'], color='#00f2ff', ls='--', alpha=0.7)
+                    ax1.plot(p_ind.index, p_ind['K_Lower'], color='#00f2ff', ls='--', alpha=0.7)
+                    ax1.fill_between(p_ind.index, p_ind['K_Upper'], p_ind['K_Lower'], color='#00f2ff', alpha=0.1)
                     
                     if not df_trades.empty:
-                        buys = df_trades[df_trades['Type']=='BUY']
-                        sells = df_trades[df_trades['Type']=='SELL']
-                        buys = buys[buys['Date'] >= plot_df.index[0]]
-                        sells = sells[sells['Date'] >= plot_df.index[0]]
-                        ax1.scatter(buys['Date'], buys['Price'], marker='^', color='#3fb950', s=80, zorder=5)
-                        ax1.scatter(sells['Date'], sells['Price'], marker='v', color='#f85149', s=80, zorder=5)
-                        
-                    ax1.set_facecolor('#0e1117'); fig1.patch.set_facecolor('#0e1117')
-                    ax1.tick_params(colors='gray'); ax1.grid(True, alpha=0.1)
+                        bs = df_trades[df_trades['Type']=='BUY']
+                        ss = df_trades[df_trades['Type']=='SELL']
+                        bs = bs[bs['Date']>=p_df.index[0]]
+                        ss = ss[ss['Date']>=p_df.index[0]]
+                        ax1.scatter(bs['Date'], bs['Price'], marker='^', color='#3fb950', s=100, zorder=5)
+                        ax1.scatter(ss['Date'], ss['Price'], marker='v', color='#f85149', s=100, zorder=5)
+                    
+                    ax1.set_facecolor('#0d1117'); fig1.patch.set_facecolor('#0d1117')
+                    ax1.tick_params(colors='#8b949e'); ax1.grid(True, color='#30363d', alpha=0.5)
                     st.pyplot(fig1)
 
                 with tab2:
                     if not df_equity.empty:
                         fig2, ax2 = plt.subplots(figsize=(12, 4))
                         ax2.plot(pd.to_datetime(df_equity['Date']), df_equity['Equity'], color='#238636', lw=2)
-                        ax2.set_facecolor('#0e1117'); fig2.patch.set_facecolor('#0e1117')
-                        ax2.tick_params(colors='gray'); ax2.grid(True, alpha=0.1)
+                        ax2.set_facecolor('#0d1117'); fig2.patch.set_facecolor('#0d1117')
+                        ax2.tick_params(colors='#8b949e'); ax2.grid(True, color='#30363d', alpha=0.5)
                         st.pyplot(fig2)
-                
-                with st.expander("查看詳細交易紀錄"):
-                    st.dataframe(df_trades, use_container_width=True)
 
             else:
-                st.error("❌ 無法獲取標的數據")
+                st.error("Connection Failed: Data Unavailable")
 
 if __name__ == "__main__":
     main()
