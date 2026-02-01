@@ -14,9 +14,9 @@ from scipy.stats import wasserstein_distance
 warnings.filterwarnings('ignore')
 
 # =============================================================================
-# 0. 視覺核心 (V57 星際美學 + V57 報告架構)
+# 0. 視覺核心 (星際美學)
 # =============================================================================
-st.set_page_config(page_title="MARCS V72 利差戰情室", layout="wide", page_icon="🌌")
+st.set_page_config(page_title="MARCS V73 戰略修復版", layout="wide", page_icon="🌌")
 
 st.markdown("""
 <style>
@@ -24,7 +24,6 @@ st.markdown("""
     
     .stApp { background-color: #050505; font-family: 'Rajdhani', sans-serif; }
     
-    /* V57 經典星空 */
     .stApp::before {
         content: ""; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
         background-image: 
@@ -35,7 +34,6 @@ st.markdown("""
     }
     @keyframes stars { from {transform: translateY(0);} to {transform: translateY(-1000px);} }
 
-    /* V57 經典懸浮卡片 */
     .metric-card {
         background: rgba(18, 18, 22, 0.75); 
         backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
@@ -54,57 +52,43 @@ st.markdown("""
     .metric-label { color: #8b949e; font-size: 12px; letter-spacing: 1px; font-family: 'Roboto Mono'; text-transform: uppercase; }
     .metric-sub { font-size: 12px; color: #58a6ff; margin-top: 5px; font-family: 'Roboto Mono'; }
     
-    .stButton>button { width: 100%; border-radius: 5px; font-weight: bold; }
+    .stButton>button { width: 100%; border-radius: 5px; font-weight: bold; background: linear-gradient(90deg, #1f6feb 0%, #00f2ff 100%); color:black; border:none;}
 </style>
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# 1. 宏觀引擎 (改為利差邏輯)
+# 1. 宏觀與資料庫
 # =============================================================================
 class Global_Market_Loader:
     @staticmethod
     def get_indices():
         return {
             "^VIX": {"name": "VIX 恐慌", "type": "Sentiment"},
-            "^TNX": {"name": "US10Y 美債殖利率", "type": "Yield"}, # [V72 修正] 看殖利率，不看價格
-            "JPY=X": {"name": "USD/JPY 匯率", "type": "Currency"}, # 搭配看利差
+            "^TNX": {"name": "US10Y 殖利率", "type": "Yield"},
+            "JPY=X": {"name": "USD/JPY 匯率", "type": "Currency"},
             "^SOX": {"name": "SOX 費半", "type": "Equity"},
             "DX-Y.NYB": {"name": "DXY 美元", "type": "Currency"}
         }
 
     @staticmethod
     def get_correlation_impact(ticker, macro_data):
-        """
-        [V72 核心] 基於「美日利差」與「資金流向」的權重矩陣
-        """
         impact_score = 0
-        
-        # 1. 取得關鍵指標趨勢
-        us10y_trend = macro_data.get('^TNX', {}).get('trend', 'Neutral')
-        jpy_trend = macro_data.get('JPY=X', {}).get('trend', 'Neutral')
-        dxy_trend = macro_data.get('DX-Y.NYB', {}).get('trend', 'Neutral')
-        sox_trend = macro_data.get('^SOX', {}).get('trend', 'Neutral')
+        us10y = macro_data.get('^TNX', {}).get('trend', 'Neutral')
+        dxy = macro_data.get('DX-Y.NYB', {}).get('trend', 'Neutral')
+        sox = macro_data.get('^SOX', {}).get('trend', 'Neutral')
 
-        # 2. 定義資產受影響邏輯
         if any(x in ticker for x in [".TW", ".TWO"]): 
-            # 台股邏輯：怕美債升息(吸金)、怕日圓貶值(亞幣競貶)、怕費半跌
-            if "Bull" in us10y_trend: impact_score -= 15 # 殖利率飆升 -> 扣分
-            if "Bull" in dxy_trend: impact_score -= 10   # 美元強 -> 扣分
-            if "Bull" in sox_trend: impact_score += 20   # 費半強 -> 加分 (最重要)
-            
-        elif "=F" in ticker: # 黃金
-            # 黃金邏輯：最怕實際利率上升 (TNX漲)
-            if "Bull" in us10y_trend: impact_score -= 25 # 殖利率漲 -> 黃金大扣分
-            if "Bull" in dxy_trend: impact_score -= 15   # 美元漲 -> 黃金扣分
-            
-        elif "-USD" in ticker: # Crypto
-            # 幣圈邏輯：怕流動性緊縮 (TNX漲)
-            if "Bull" in us10y_trend: impact_score -= 20
-            if "Bull" in dxy_trend: impact_score -= 10
+            if "Bull" in us10y: impact_score -= 15
+            if "Bull" in dxy: impact_score -= 10
+            if "Bull" in sox: impact_score += 20
+        elif "=F" in ticker:
+            if "Bull" in us10y: impact_score -= 25
+            if "Bull" in dxy: impact_score -= 15
+        elif "-USD" in ticker:
+            if "Bull" in us10y: impact_score -= 20
             
         return int(impact_score)
 
-    # ... (保留之前的爬蟲代碼) ...
     @staticmethod
     @st.cache_data(ttl=3600)
     def get_tw_full_market():
@@ -134,6 +118,9 @@ class Global_Market_Loader:
         elif "貴金屬" in market_type: return ["GC=F", "SI=F", "HG=F", "CL=F"]
         return []
 
+# =============================================================================
+# 2. 分析引擎
+# =============================================================================
 class Macro_Engine:
     @staticmethod
     def analyze(ticker, name):
@@ -142,13 +129,10 @@ class Macro_Engine:
             if df.empty: return None
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             c = df['Close']
-            
-            # 趨勢判斷 (MA + RSI)
             ma20 = c.rolling(20).mean()
             trend = "Neutral"
             if c.iloc[-1] > ma20.iloc[-1]: trend = "Bullish/High"
             else: trend = "Bearish/Low"
-            
             return {"name": name, "price": c.iloc[-1], "trend": trend}
         except: return None
 
@@ -165,7 +149,6 @@ class Scanner_Engine_V38:
             ma20 = c.rolling(20).mean().iloc[-1]; ma60 = c.rolling(60).mean().iloc[-1]
             if not (c.iloc[-1] > ma20 > ma60): return None
             
-            # RSI Logic
             delta = c.diff()
             gain = (delta.where(delta > 0, 0)).rolling(14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -192,14 +175,18 @@ class Micro_Engine:
             df = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
             if df.empty: return 50, [], df, 0
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-            c = df['Close']; score = 50; signals = []
+            c = df['Close']; h = df['High']; l = df['Low']; v = df['Volume']
+            score = 50; signals = []
+            
             ema20 = c.ewm(span=20).mean()
-            atr = (df['High']-df['Low']).rolling(14).mean()
+            atr = (h-l).rolling(14).mean()
             k_upper = ema20 + 2.0 * atr.rolling(10).mean()
             k_lower = ema20 - 2.0 * atr.rolling(10).mean()
+            
             if c.iloc[-1] > k_upper.iloc[-1]: score += 15; signals.append("Keltner 突破")
-            obv = (np.sign(c.diff()) * df['Volume']).fillna(0).cumsum()
+            obv = (np.sign(c.diff()) * v).fillna(0).cumsum()
             if obv.iloc[-1] > obv.rolling(20).mean().iloc[-1]: score += 5; signals.append("OBV 強勢")
+            
             df['K_Upper'] = k_upper; df['K_Lower'] = k_lower
             return score, signals, df, atr.iloc[-1]
         except: return 50, [], pd.DataFrame(), 0
@@ -211,16 +198,32 @@ class Risk_Manager:
         elif "=F" in ticker: vol_cap = 0.4; atype = "Metal"
         elif any(x in ticker for x in [".TW", ".TWO"]): vol_cap = 0.5; atype = "TW Stock"
         else: vol_cap = 0.6; atype = "US Stock"
-        risk = capital * 0.02; dist = price - sl
+        
+        risk = capital * 0.02
+        dist = price - sl
         if dist <= 0: return 0, {}
         
         conf = hybrid_score / 100.0
+        
+        # 計算倉位股數/單位
         size = int((risk/dist) * (0.5 if vol_cap>0.8 else 1.0) * conf)
-        if vol_cap>0.8: size = round((risk/dist)*0.5*conf, 4)
-        return size, {"risk": int(risk), "type": atype, "cap": int(size*price), "conf": round(conf, 2)}
+        if vol_cap > 0.8: size = round((risk/dist)*0.5*conf, 4)
+        
+        # [V73] 計算百分比
+        position_value = size * price
+        pct_capital = (position_value / capital) * 100
+        
+        # 限制最大倉位 50% 防止爆倉
+        if pct_capital > 50: 
+            pct_capital = 50
+            size = (capital * 0.5) / price
+            if vol_cap <= 0.8: size = int(size)
+            position_value = size * price
+
+        return size, {"risk": int(risk), "type": atype, "cap": int(position_value), "pct": round(pct_capital, 1)}
 
 # =============================================================================
-# MAIN UI (回歸 V57 的被動輸入優先架構)
+# MAIN UI
 # =============================================================================
 def main():
     # --- Sidebar ---
@@ -228,13 +231,11 @@ def main():
     capital = st.sidebar.number_input("總本金", value=1000000, step=100000)
     
     st.sidebar.markdown("---")
-    # [V57 經典設計] 手動輸入置於側邊欄最顯眼處
     st.sidebar.markdown("### 📝 被動輸入 (Quick Check)")
     manual_input = st.sidebar.text_input("輸入代碼 (e.g. 2330.TW)", value="").upper()
     run_manual = st.sidebar.button("分析單一標的")
 
     st.sidebar.markdown("---")
-    # 掃描功能改為折疊，避免搶戲
     with st.sidebar.expander("📡 主動掃描 (Scanner)"):
         mode = st.radio("來源", ["線上掃描", "匯入CSV"])
         if mode == "線上掃描":
@@ -258,28 +259,23 @@ def main():
                 df.columns = [c.lower() for c in df.columns]; df.rename(columns={'stoploss':'sl'}, inplace=True)
                 st.session_state.scan_results = df.to_dict('records')
 
-    # Video
     st.sidebar.markdown("---")
     video_file = "demo.mp4"
     if os.path.exists(video_file): st.sidebar.video(video_file)
 
-    # --- Main Area ---
-    st.markdown("<h1 style='text-align:center; color:#00f2ff; text-shadow: 0 0 10px rgba(0,242,255,0.5);'>🛡️ MARCS V72 利差戰情室</h1>", unsafe_allow_html=True)
+    # --- Main ---
+    st.markdown("<h1 style='text-align:center; color:#00f2ff; text-shadow: 0 0 10px rgba(0,242,255,0.5);'>🛡️ MARCS V73 戰略修復版</h1>", unsafe_allow_html=True)
 
-    # Session
     if "scan_results" not in st.session_state: st.session_state.scan_results = []
     if "macro_data" not in st.session_state: st.session_state.macro_data = {}
     if "target" not in st.session_state: st.session_state.target = "BTC-USD"
 
-    # Logic Handler
     if run_manual and manual_input: st.session_state.target = manual_input
 
-    # =================================================
-    # ZONE 1: 宏觀矩陣 (Macro)
-    # =================================================
-    st.markdown("### 📡 1. 全球宏觀矩陣 (Macro Matrix)")
-    if st.button("🔄 同步全球數據 (Yield Update)"):
-        with st.spinner("分析美債殖利率與資金流向..."):
+    # ZONE 1: Macro
+    st.markdown("### 📡 1. 全球宏觀 (Macro)")
+    if st.button("🔄 同步全球數據 (Update)"):
+        with st.spinner("Analyzing Yield Spreads..."):
             macro_res = {}
             cols = st.columns(5)
             idx = 0
@@ -287,7 +283,6 @@ def main():
                 r = Macro_Engine.analyze(t, info['name'])
                 if r:
                     macro_res[t] = r
-                    # 顏色邏輯：殖利率(TNX)飆升顯示紅色警告
                     is_bad = "Bull" in r['trend'] and ("VIX" in t or "TNX" in t or "DXY" in t)
                     clr = "#f85149" if is_bad else "#3fb950"
                     with cols[idx]:
@@ -299,36 +294,27 @@ def main():
                     idx += 1
             st.session_state.macro_data = macro_res
 
-    # =================================================
-    # ZONE 2: 掃描結果 (Optional)
-    # =================================================
+    # ZONE 2: Scanner Result
     if st.session_state.scan_results:
-        with st.expander("🔭 掃描結果列表 (Scanner Results)", expanded=False):
+        with st.expander("🔭 掃描結果列表"):
             df = pd.DataFrame(st.session_state.scan_results)
             st.dataframe(df[['ticker', 'score', 'price', 'sl']], use_container_width=True)
             sel = st.selectbox("選擇分析:", [r['ticker'] for r in st.session_state.scan_results])
             if st.button("分析選定標的"): st.session_state.target = sel
 
-    # =================================================
-    # ZONE 3: 完美被動報告 (V57 架構回歸)
-    # =================================================
+    # ZONE 3: Report
     target = st.session_state.target
     if target:
         st.markdown("---")
         st.markdown(f"### 🎯 深度戰略分析: {target}")
         
-        with st.spinner(f"正在運算 {target} 的微觀結構與宏觀利差影響..."):
-            # 1. Micro
+        with st.spinner(f"Processing {target}..."):
             m_score, sigs, df_m, atr = Micro_Engine.analyze(target)
-            
-            # 2. Macro Impact (Yield Spread Logic)
             impact = 0
             if st.session_state.macro_data:
                 impact = Global_Market_Loader.get_correlation_impact(target, st.session_state.macro_data)
-            
             hybrid = m_score + impact
             
-            # 3. Risk
             info = next((r for r in st.session_state.scan_results if r['ticker'] == target), None)
             if not df_m.empty:
                 curr_p = df_m['Close'].iloc[-1]
@@ -339,20 +325,20 @@ def main():
             if curr_p > 0:
                 size, dets = Risk_Manager.calculate(capital, curr_p, sl_p, target, hybrid)
                 
-                # --- V57 經典報告排版 ---
-                # Row 1: 核心數據卡片
+                # --- V73 更新：倉位改成百分比顯示 ---
                 c1, c2, c3, c4 = st.columns(4)
-                with c1: st.markdown(f"""<div class="metric-card"><div class="metric-label">微觀技術分</div><div class="metric-value">{m_score}</div><div class="metric-sub">{', '.join(sigs)}</div></div>""", unsafe_allow_html=True)
+                with c1: st.markdown(f"""<div class="metric-card"><div class="metric-label">微觀評分</div><div class="metric-value">{m_score}</div><div class="metric-sub">{', '.join(sigs)}</div></div>""", unsafe_allow_html=True)
                 with c2: 
-                    sign = "+" if impact>0 else ""
                     clr = "#3fb950" if impact>0 else "#f85149"
-                    st.markdown(f"""<div class="metric-card"><div class="metric-label">利差宏觀修正</div><div class="metric-value" style="color:{clr}">{sign}{impact}</div></div>""", unsafe_allow_html=True)
+                    st.markdown(f"""<div class="metric-card"><div class="metric-label">宏觀修正</div><div class="metric-value" style="color:{clr}">{impact}</div></div>""", unsafe_allow_html=True)
                 with c3: st.markdown(f"""<div class="metric-card" style="border-color:#00f2ff"><div class="metric-label">總體評分</div><div class="metric-value" style="color:#00f2ff">{hybrid}</div></div>""", unsafe_allow_html=True)
-                with c4: st.markdown(f"""<div class="metric-card"><div class="metric-label">建議倉位 ({dets['type']})</div><div class="metric-value">{size}</div><div class="metric-sub">Risk: -${dets['risk']}</div></div>""", unsafe_allow_html=True)
                 
-                # Row 2: 戰術圖表
+                # 這裡改為顯示 %
+                with c4: st.markdown(f"""<div class="metric-card"><div class="metric-label">建議倉位 %</div><div class="metric-value">{dets['pct']}%</div><div class="metric-sub">{size} 股 (${dets['cap']:,})</div></div>""", unsafe_allow_html=True)
+                
+                # Chart
                 st.markdown("#### 📊 戰術圖表 (Tactical Chart)")
-                tab1, tab2 = st.tabs(["🕯️ Keltner 通道", "📈 趨勢細節"])
+                tab1, tab2 = st.tabs(["🕯️ Keltner 主圖", "🌊 趨勢細節 (RSI/OBV)"])
                 
                 with tab1:
                     fig, ax = plt.subplots(figsize=(12, 5))
@@ -366,6 +352,39 @@ def main():
                     ax.set_facecolor('#0d1117'); fig.patch.set_facecolor('#0d1117')
                     ax.tick_params(colors='#8b949e'); ax.grid(True, color='#30363d', alpha=0.3)
                     st.pyplot(fig)
+                
+                # --- V73 更新：補上趨勢細節圖表 ---
+                with tab2:
+                    st.caption("展示 RSI 動能指標與成交量變化")
+                    if not df_m.empty:
+                        # 計算指標
+                        delta = df_m['Close'].diff()
+                        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                        rs = gain / loss
+                        rsi = 100 - (100 / (1 + rs))
+                        
+                        fig2, (ax_rsi, ax_vol) = plt.subplots(2, 1, figsize=(12, 6), sharex=True, height_ratios=[1, 1])
+                        sub_ind = df_m.tail(120)
+                        rsi_sub = rsi.tail(120)
+                        
+                        # RSI Plot
+                        ax_rsi.plot(rsi_sub.index, rsi_sub, color='#d2a8ff', lw=1.5)
+                        ax_rsi.axhline(70, color='#f85149', ls='--', alpha=0.5)
+                        ax_rsi.axhline(30, color='#3fb950', ls='--', alpha=0.5)
+                        ax_rsi.set_title('Relative Strength Index (RSI)', color='white', fontsize=10)
+                        ax_rsi.set_facecolor('#0d1117')
+                        ax_rsi.tick_params(colors='#8b949e')
+                        
+                        # Volume Plot
+                        colors = ['#f85149' if o > c else '#3fb950' for o, c in zip(sub_ind['Open'], sub_ind['Close'])]
+                        ax_vol.bar(sub_ind.index, sub_ind['Volume'], color=colors, alpha=0.8)
+                        ax_vol.set_title('Volume Profile', color='white', fontsize=10)
+                        ax_vol.set_facecolor('#0d1117')
+                        ax_vol.tick_params(colors='#8b949e')
+                        
+                        fig2.patch.set_facecolor('#0d1117')
+                        st.pyplot(fig2)
             else:
                 st.error("無法獲取數據，請確認代碼是否正確。")
 
