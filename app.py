@@ -15,7 +15,7 @@ warnings.filterwarnings('ignore')
 
 # 設定網頁配置
 st.set_page_config(
-    page_title="MARCS V64 全域戰情室",
+    page_title="MARCS V65 終極戰情室",
     layout="wide",
     page_icon="⚡",
     initial_sidebar_state="expanded"
@@ -38,7 +38,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# 1. 資料庫與強力爬蟲
+# 1. 資料庫與強力爬蟲 (移植自 V38)
 # =============================================================================
 class Global_Market_Loader:
     @staticmethod
@@ -54,39 +54,44 @@ class Global_Market_Loader:
     @st.cache_data(ttl=3600)
     def get_tw_full_market():
         """
-        [修復版] 強力爬取台股上市+上櫃完整清單
+        [核心移植] 爬取台股上市+上櫃完整清單 (來源: 證交所)
         """
         tickers = []
         try:
+            # 偽裝瀏覽器 Header (關鍵)
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
             
             # 模式 2=上市, 4=上櫃
+            # 這裡完全還原 V38 的爬蟲邏輯
             for mode, suffix in [(2, '.TW'), (4, '.TWO')]:
                 url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
-                res = requests.get(url, headers=headers, timeout=10)
+                res = requests.get(url, headers=headers, timeout=15)
                 
-                # 簡單解析：尋找所有 4 位數代碼
+                # 解析 HTML 表格
                 df = pd.read_html(res.text)[0]
                 
-                # 針對證交所表格特性進行過濾 (第0欄通常是 "有價證券代號及名稱")
-                # 我們把這一欄轉成字串，並尋找 "四個數字" 開頭的
+                # 第0欄通常是 "有價證券代號及名稱"
                 raw_col = df.iloc[:, 0].astype(str)
+                
                 for item in raw_col:
-                    parts = item.split() # 用空白切割 "2330 台積電" -> ["2330", "台積電"]
-                    if len(parts) > 0:
+                    parts = item.split() # 切割 "2330 台積電" -> ["2330", "台積電"]
+                    if len(parts) >= 1:
                         code = parts[0]
                         # 嚴格篩選：必須是4位數字 (過濾掉權證、債券)
                         if len(code) == 4 and code.isdigit():
                             tickers.append(f"{code}{suffix}")
             
-            # 如果爬到的太少，代表爬蟲失敗，觸發 Exception
+            # 如果爬到的數量太少，可能是證交所擋 IP，觸發備用方案
             if len(tickers) < 100: raise Exception("Crawl result too small")
             
+            # 隨機打亂，避免每次都從 1101 開始掃
+            random.shuffle(tickers)
             return tickers
             
         except Exception as e:
             # [備用方案] 內建 300 檔涵蓋各產業龍頭與熱門股，確保永遠有東西跑
-            fallback = [
+            st.warning(f"⚠️ 證交所連線異常 ({e})，切換至內建熱門股清單。")
+            return [
                 "2330.TW", "2317.TW", "2454.TW", "2303.TW", "2603.TW", "2382.TW", "3231.TW", "2881.TW", "2882.TW",
                 "1519.TW", "3035.TWO", "8069.TWO", "3293.TWO", "2376.TW", "2356.TW", "3017.TW", "3044.TW", "2308.TW",
                 "2412.TW", "1301.TW", "1303.TW", "2002.TW", "2891.TW", "5871.TW", "2886.TW", "2884.TW", "1216.TW",
@@ -94,16 +99,15 @@ class Global_Market_Loader:
                 "3034.TW", "3037.TW", "2379.TW", "2408.TW", "3443.TW", "3661.TW", "6669.TW", "6515.TW", "5269.TW",
                 "2383.TW", "6278.TW", "6214.TW", "6415.TW", "6147.TWO", "3529.TWO", "5347.TWO", "6182.TWO"
             ]
-            # 這裡為了演示，我們就只列這些，實戰中這份列表可以更長
-            return fallback
 
     @staticmethod
-    def get_scan_list(market_type, limit=300):
+    def get_scan_list(market_type, limit=0):
         if "台股" in market_type:
             full_list = Global_Market_Loader.get_tw_full_market()
-            # 隨機打亂以避免每次都只掃代號小的
-            random.shuffle(full_list)
-            return full_list[:limit]
+            # 如果 limit 為 0 或大於總數，則回傳全部
+            if limit > 0 and limit < len(full_list):
+                return full_list[:limit]
+            return full_list
         
         elif "美股" in market_type:
             return ["NVDA", "TSLA", "AAPL", "MSFT", "AMD", "GOOG", "AMZN", "META", "SMCI", "PLTR", "COIN", "MSTR", "ARM", "AVGO", "QCOM", "INTC", "TSM", "SOXL", "TQQQ", "MRVL", "MU", "DELL", "SMH"]
@@ -188,6 +192,7 @@ class Scanner_Engine_V38:
             score = 40
             if 55 <= rsi <= 75: score += 20
             elif rsi > 75: score += 10
+            elif rsi < 50: score -= 10
             
             vol_ma5 = v.rolling(5).mean().iloc[-1]
             if v.iloc[-1] > vol_ma5 * 1.3: score += 15
@@ -285,10 +290,12 @@ def main():
     market_select = st.sidebar.radio("選擇戰場:", ["🇹🇼 台股 (全市場)", "🇺🇸 美股 (科技)", "₿ 加密貨幣", "🥇 貴金屬"])
     
     # 掃描限制
-    scan_limit = 300
+    scan_limit = 0 # 0 代表全掃
     if "台股" in market_select:
-        st.sidebar.caption("提示: 台股掃描全市場較慢，建議限制數量")
-        scan_limit = st.sidebar.slider("掃描數量上限", 100, 2000, 300, step=100)
+        st.sidebar.caption("提示: 預設掃描全市場 (1800+檔)。若太慢可設定上限。")
+        use_limit = st.sidebar.checkbox("限制掃描數量 (加速用)", value=True)
+        if use_limit:
+            scan_limit = st.sidebar.slider("掃描數量上限", 100, 2000, 300, step=100)
     
     run_scan = st.sidebar.button(f"啟動 {market_select} 掃描")
     
@@ -300,7 +307,7 @@ def main():
             st.video(video_file)
 
     # --- Header ---
-    st.markdown("<h1 style='color:#00f2ff; text-align:center;'>⚡ MARCS V64 極速戰情室</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='color:#00f2ff; text-align:center;'>⚡ MARCS V65 終極戰情室</h1>", unsafe_allow_html=True)
 
     # Session State
     if "scan_results" not in st.session_state: st.session_state.scan_results = []
@@ -314,7 +321,7 @@ def main():
     if run_scan:
         st.session_state.analysis_target = None
         # 1. 獲取清單
-        with st.spinner("正在獲取市場清單 (爬蟲啟動中)..."):
+        with st.spinner(f"正在獲取 {market_select} 清單 (爬蟲啟動中)..."):
             tickers = Global_Market_Loader.get_scan_list(market_select, scan_limit)
         
         if not tickers:
