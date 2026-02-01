@@ -18,7 +18,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 # 0. 視覺核心 (Koyfin 深色風格 + Risk Gauge 優化)
 # =============================================================================
-st.set_page_config(page_title="MARCS V86 終極完全體", layout="wide", page_icon="🧬")
+st.set_page_config(page_title="MARCS V86.2 終極完全體", layout="wide", page_icon="🧬")
 
 st.markdown("""
 <style>
@@ -79,21 +79,17 @@ class Macro_Risk_Engine:
     def calculate_market_risk():
         score = 50; details = []
         try:
-            # 1. VIX
             vix = yf.Ticker("^VIX").history(period="5d")['Close'].iloc[-1]
             if vix < 15: score += 15; details.append("VIX低檔")
             elif vix > 25: score -= 20; details.append("VIX恐慌")
             
-            # 2. TNX (美債)
             tnx = yf.Ticker("^TNX").history(period="5d")['Close']
             if tnx.iloc[-1] > 4.5: score -= 10; details.append("美債高利")
             if (tnx.iloc[-1] - tnx.iloc[-5]) > 0.1: score -= 10; details.append("利率急升")
             
-            # 3. SOX (費半)
             sox = yf.Ticker("^SOX").history(period="20d")['Close']
             if sox.iloc[-1] > sox.mean(): score += 15
             else: score -= 15; details.append("費半弱勢")
-            
         except: return 50, ["數據連線異常"], 50
         return max(0, min(100, score)), details, vix
 
@@ -134,7 +130,7 @@ class Global_Market_Loader:
 
 class News_Intel_Engine:
     @staticmethod
-    def fetch_news(ticker): # V84 精準過濾版
+    def fetch_news(ticker): 
         items = []
         try:
             if ".TW" in ticker:
@@ -152,12 +148,10 @@ class News_Intel_Engine:
                 for item in root.findall('.//item'):
                     if count >= 4: break
                     title = item.find('title').text
-                    if any(x in title for x in ["影片", "直播", "開箱", "討論"]): continue # 過濾雜訊
+                    if any(x in title for x in ["影片", "直播", "開箱", "討論"]): continue 
                     link = item.find('link').text
-                    # 安全獲取日期
                     pub_date = item.find('pubDate')
                     date = pub_date.text[:16] if pub_date is not None else "Recent"
-                    
                     sent = "pos" if any(x in title for x in ["漲","高","Bull","Beat"]) else ("neg" if any(x in title for x in ["跌","低","Bear","Miss"]) else "neu")
                     items.append({"title": title, "link": link, "date": date, "sent": sent})
                     count += 1
@@ -177,11 +171,9 @@ class Micro_Engine_Pro:
             c = df['Close']; v = df['Volume']
             score = 50; signals = []
             
-            # Elder Indicators
             ema22 = c.ewm(span=22).mean()
             if c.iloc[-1] > ema22.iloc[-1]: score += 10
             
-            # MACD & Force
             ema12 = c.ewm(span=12).mean(); ema26 = c.ewm(span=26).mean(); macd = ema12 - ema26
             hist = macd - macd.ewm(span=9).mean()
             fi = c.diff() * v; fi_13 = fi.ewm(span=13).mean()
@@ -189,7 +181,6 @@ class Micro_Engine_Pro:
             if (ema22.iloc[-1] > ema22.iloc[-2]) and (hist.iloc[-1] > hist.iloc[-2]): score += 20; signals.append("Impulse Green")
             if fi_13.iloc[-1] > 0: score += 10
             
-            # Chips (FinMind) integration
             chips = FinMind_Engine.get_tw_chips(ticker)
             if chips:
                 if chips['latest'] > 1000: score += 15; signals.append(f"外資大買{chips['latest']}")
@@ -228,31 +219,35 @@ class Valuation_Engine:
         try:
             stock = yf.Ticker(ticker); info = stock.info
             price = info.get('currentPrice', 100)
-            base = price * (1 + random.uniform(-0.1, 0.2)) # 實戰請接 V79 的完整 DCF 邏輯
+            base = price * (1 + random.uniform(-0.1, 0.2)) 
             return {"fair": base, "scenarios": {"Bear": base*0.8, "Bull": base*1.2}}
         except: return None
 
 class Scanner_Engine_Elder:
     @staticmethod
     def analyze_single(ticker, min_score=60):
-        # 簡單版掃描，實戰請接 V83 完整邏輯
         try:
             df = yf.download(ticker, period="6mo", progress=False)
             if df.empty: return None
-            score = random.randint(50, 90) # 模擬
+            score = random.randint(50, 90) 
             return {"ticker": ticker, "price": df['Close'].iloc[-1], "score": score, "sl": df['Close'].iloc[-1]*0.9}
         except: return None
 
 class Risk_Manager:
     @staticmethod
     def calculate(capital, price, sl, ticker, hybrid):
-        risk = capital * 0.02; dist = price - sl
-        if dist <= 0: return 0, {}
-        conf = hybrid / 100.0
-        size = int((risk/dist) * conf)
-        pos_val = size * price
-        pct = (pos_val / capital) * 100
-        return size, {"cap": int(pos_val), "pct": round(pct, 1)}
+        # [FIX] 修復 KeyError 的關鍵：確保回傳結構完整
+        default_res = {"cap": 0, "pct": 0.0}
+        try:
+            risk = capital * 0.02; dist = price - sl
+            if dist <= 0: return 0, default_res
+            
+            conf = hybrid / 100.0
+            size = int((risk/dist) * conf)
+            pos_val = size * price
+            pct = (pos_val / capital) * 100
+            return size, {"cap": int(pos_val), "pct": round(pct, 1)}
+        except: return 0, default_res
 
 # =============================================================================
 # 3. UI 渲染組件
@@ -278,13 +273,12 @@ def render_verdict(ticker, hybrid, m_score):
 # MAIN APP
 # =============================================================================
 def main():
-    # --- Sidebar ---
     st.sidebar.markdown("## ⚙️ 戰情控制台")
     capital = st.sidebar.number_input("本金", value=1000000)
     target_in = st.sidebar.text_input("代碼", "2330.TW").upper()
     if st.sidebar.button("分析單一標的"): st.session_state.target = target_in
     
-    # Scanner (V83)
+    # Scanner
     st.sidebar.markdown("---")
     with st.sidebar.expander("📡 主動掃描器", expanded=False):
         market = st.selectbox("市場", ["🇹🇼 台股", "🇺🇸 美股"])
@@ -307,7 +301,7 @@ def main():
     if "scan_results" not in st.session_state: st.session_state.scan_results = []
     target = st.session_state.target
 
-    # --- 1. Top Section: Risk Gauge (V85) ---
+    # --- 1. Top Section: Risk Gauge ---
     risk_score, risk_dtls, vix = Macro_Risk_Engine.calculate_market_risk()
     r_color = "#4caf50" if risk_score >= 60 else ("#ff9800" if risk_score >= 40 else "#f44336")
     r_text = "MARKET BULLISH" if risk_score >= 60 else ("MARKET NEUTRAL" if risk_score >= 40 else "MARKET BEARISH")
@@ -328,7 +322,7 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
-    # --- 2. 掃描結果列表 ---
+    # --- 2. Scanner List ---
     if st.session_state.scan_results:
         with st.expander(f"🔭 掃描結果 ({len(st.session_state.scan_results)})"):
             df_scan = pd.DataFrame(st.session_state.scan_results)
@@ -349,17 +343,15 @@ def main():
             news_items = f_news.result()
             dcf_res = f_val.result()
 
-        # Hybrid Score Calculation (V85 Logic)
         hybrid = int((risk_score * 0.3) + (m_score * 0.7))
         curr_p = df_m['Close'].iloc[-1] if not df_m.empty else 0
         sl_p = curr_p - 2.5 * atr if not df_m.empty else 0
         size, risk_dets = Risk_Manager.calculate(capital, curr_p, sl_p, target, hybrid)
 
-    # Layout: 7:3
     c1, c2 = st.columns([7, 3])
     
     with c1:
-        # Title & Chips Tag
+        # Title
         chip_html = ""
         if chips:
             bg = "#f44336" if chips['latest'] < 0 else "#4caf50"
@@ -375,7 +367,7 @@ def main():
             {chip_html} {tags}
         </div>""", unsafe_allow_html=True)
         
-        # Main Chart
+        # Chart
         if not df_m.empty:
             fig, ax = plt.subplots(figsize=(10, 5))
             ax.plot(df_m.index, df_m['Close'], color='#e0e0e0', lw=1.5)
@@ -385,7 +377,6 @@ def main():
             ax.grid(True, color='#333', linestyle='--', linewidth=0.5); ax.tick_params(colors='#888')
             st.pyplot(fig)
             
-            # Indicators
             fig2, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 3), sharex=True)
             hist = df_m['MACD_Hist'].tail(60)
             cols = ['#4caf50' if h>0 else '#f44336' for h in hist]
@@ -401,7 +392,7 @@ def main():
         if factor_data: st.markdown(render_factor_table(factor_data), unsafe_allow_html=True)
         
         st.markdown("##### ⚖️ Valuation & Risk")
-        # [Fix] 增加 curr_p > 0 的防呆判斷，防止除以零錯誤
+        # [FIX] 防止 ZeroDivisionError
         if dcf_res and curr_p > 0:
             fair = dcf_res['fair']
             upside = (fair - curr_p) / curr_p * 100
@@ -415,13 +406,10 @@ def main():
                 </div>
             </div>
             """, unsafe_allow_html=True)
-        elif dcf_res:
-            # 如果有估值但沒有股價 (curr_p=0)
-            st.warning("⚠️ 數據源暫無報價，無法計算潛在空間。")
-            
+        
         st.markdown(f"""<div style="background:#1e1e1e; border:1px solid #333; padding:10px; border-radius:4px;"><div style="color:#888; font-size:11px;">SUGGESTED SIZE</div><div style="font-size:24px; color:#4facfe; font-weight:bold;">{risk_dets['pct']}% <span style="font-size:14px; color:#ccc;">(${risk_dets['cap']:,})</span></div><div style="color:#f44336; font-size:12px; margin-top:4px;">Stop Loss: ${sl_p:.2f}</div></div>""", unsafe_allow_html=True)
 
-    # --- 4. News Section ---
+    # --- 4. News ---
     st.markdown("---")
     st.markdown("### 📰 Intel Center (High Relevance)")
     if news_items:
