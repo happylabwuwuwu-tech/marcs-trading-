@@ -312,7 +312,7 @@ def main():
     
     st.sidebar.markdown("---")
     # 請替換為你的 GitHub Raw Video URL
-    video_url = "demo.mp4" 
+    video_url = "https://raw.githubusercontent.com/YOUR_NAME/YOUR_REPO/main/model_arch.mp4.mp4" 
     st.sidebar.markdown("### 🎥 系統架構演示")
     try: st.sidebar.video(video_url)
     except: st.sidebar.info("請配置影片 URL")
