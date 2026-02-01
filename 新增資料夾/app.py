@@ -52,6 +52,14 @@ st.markdown("""
     .highlight-val { font-size: 24px; font-weight: bold; color: #fff; font-family: 'JetBrains Mono'; }
     .highlight-lbl { font-size: 12px; color: #888; text-transform: uppercase; }
     
+    /* 智能點評 */
+    .verdict-box {
+        background: #1e1e1e; border-left: 4px solid #ffae00; 
+        padding: 15px; border-radius: 4px; margin-bottom: 15px; border: 1px solid #333;
+    }
+    .verdict-title { font-size: 16px; font-weight: bold; color: #fff; margin-bottom: 5px; }
+    .verdict-text { font-size: 14px; color: #ccc; line-height: 1.5; }
+
     /* V84 新聞卡片 */
     .news-card { background: #1e1e1e; border-bottom: 1px solid #333; padding: 10px; transition: background 0.2s; }
     .news-card:hover { background: #252525; }
@@ -114,12 +122,11 @@ class FinMind_Engine:
         except: return None
 
 # =============================================================================
-# 3. 掃描與情報引擎 (V83 Scanner + V84 News)
+# 3. 掃描與情報引擎 (V83 Scanner + V84 Smart News)
 # =============================================================================
 class Global_Market_Loader:
     @staticmethod
     def get_scan_list(market_type, limit=0):
-        # 簡化範例，實戰請接 V83 的爬蟲代碼
         if "台股" in market_type: return ["2330.TW", "2317.TW", "2454.TW", "2603.TW", "2382.TW", "6669.TW", "3035.TWO", "3037.TW", "2368.TW"]
         elif "美股" in market_type: return ["NVDA", "TSLA", "AAPL", "MSFT", "AMD", "GOOG", "AMZN", "META", "SMCI", "COIN"]
         elif "加密" in market_type: return ["BTC-USD", "ETH-USD", "SOL-USD"]
@@ -147,7 +154,10 @@ class News_Intel_Engine:
                     title = item.find('title').text
                     if any(x in title for x in ["影片", "直播", "開箱", "討論"]): continue # 過濾雜訊
                     link = item.find('link').text
-                    date = item.find('pubDate').text[:16] if item.find('pubDate') is not None else "Recent"
+                    # 安全獲取日期
+                    pub_date = item.find('pubDate')
+                    date = pub_date.text[:16] if pub_date is not None else "Recent"
+                    
                     sent = "pos" if any(x in title for x in ["漲","高","Bull","Beat"]) else ("neg" if any(x in title for x in ["跌","低","Bear","Miss"]) else "neu")
                     items.append({"title": title, "link": link, "date": date, "sent": sent})
                     count += 1
@@ -254,6 +264,15 @@ def render_factor_table(factors):
         width = f"{score}%"
         rows += f"<tr><td>{name}</td><td style='width:100px;'><div class='factor-bar-bg'><div class='factor-bar-fill' style='width:{width}; background:{color};'></div></div></td><td style='text-align:right; color:{color}; font-weight:bold;'>{score}</td></tr>"
     return f"<table class='factor-table'>{rows}</table>"
+
+def render_verdict(ticker, hybrid, m_score):
+    tag = "😐 HOLD"; color = "#888"
+    if hybrid >= 75: tag = "🔥 STRONG BUY"; color = "#3fb950"
+    elif hybrid >= 60: tag = "✅ BUY"; color = "#1f6feb"
+    elif hybrid <= 40: tag = "❄️ WEAK"; color = "#f44336"
+    text = f"目前技術面{'強勁' if m_score>60 else '疲弱'}。"
+    if hybrid > m_score: text += " 宏觀順風加成。"
+    return f"""<div class='verdict-box' style='border-left-color:{color};'><div class='verdict-title' style='color:{color};'>{tag} (Score: {hybrid})</div><div class='verdict-text'>{text}</div></div>"""
 
 # =============================================================================
 # MAIN APP
@@ -377,21 +396,6 @@ def main():
             fig2.patch.set_facecolor('#121212'); st.pyplot(fig2)
 
     with c2:
-        # Score Card
-        st.markdown(f"""
-        <div class="metric-card" style="border-left-color: {'#4caf50' if hybrid>=60 else '#f44336'};">
-            <div class="highlight-lbl">MARCS HYBRID SCORE</div>
-            <div class="highlight-val">{hybrid}</div>
-            <div style="font-size:12px; color:#aaa; margin-top:5px;">Macro Risk + Elder Tech + Chips</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Factor Table
-        st.markdown("##### 🧬 Factor Profile")
-        if factor_data: st.markdown(render_factor_table(factor_data), unsafe_allow_html=True)
-        
-        # Valuation & Risk
-with side_col:
         st.markdown(render_verdict(target, hybrid, m_score), unsafe_allow_html=True)
         st.markdown("##### 🧬 Factor Profile")
         if factor_data: st.markdown(render_factor_table(factor_data), unsafe_allow_html=True)
@@ -416,6 +420,7 @@ with side_col:
             st.warning("⚠️ 數據源暫無報價，無法計算潛在空間。")
             
         st.markdown(f"""<div style="background:#1e1e1e; border:1px solid #333; padding:10px; border-radius:4px;"><div style="color:#888; font-size:11px;">SUGGESTED SIZE</div><div style="font-size:24px; color:#4facfe; font-weight:bold;">{risk_dets['pct']}% <span style="font-size:14px; color:#ccc;">(${risk_dets['cap']:,})</span></div><div style="color:#f44336; font-size:12px; margin-top:4px;">Stop Loss: ${sl_p:.2f}</div></div>""", unsafe_allow_html=True)
+
     # --- 4. News Section ---
     st.markdown("---")
     st.markdown("### 📰 Intel Center (High Relevance)")
