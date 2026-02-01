@@ -17,7 +17,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 # 0. 視覺核心 (維持 V88 星際風格)
 # =============================================================================
-st.set_page_config(page_title="MARCS V89 PEG動態戰情室", layout="wide", page_icon="🧬")
+st.set_page_config(page_title="MARCS V90 時光修復版", layout="wide", page_icon="🧬")
 
 st.markdown("""
 <style>
@@ -52,7 +52,7 @@ st.markdown("""
     }
     .metric-card:hover { transform: translateY(-3px); border-left-color: #ffd700; }
     
-    .highlight-val { font-size: 28px; font-weight: bold; color: #fff; font-family: 'JetBrains Mono'; }
+    .highlight-val { font-size: 24px; font-weight: bold; color: #fff; font-family: 'JetBrains Mono'; }
     .highlight-lbl { font-size: 12px; color: #8b949e; letter-spacing: 1px; text-transform: uppercase;}
     .smart-text { font-size: 14px; color: #ffb86c; font-weight: bold; margin-top: 5px; }
     
@@ -73,13 +73,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# 1. 數據獲取層 (Robust Data)
+# 1. 數據獲取層
 # =============================================================================
 def robust_download(ticker, period="1y"):
     try:
         df = yf.download(ticker, period=period, interval="1d", progress=False, auto_adjust=True)
         if df.empty: return pd.DataFrame()
-        # [V87 Fix] 處理 yfinance 多重索引問題
         if isinstance(df.columns, pd.MultiIndex):
             try: df.columns = df.columns.get_level_values(0) 
             except: pass
@@ -97,7 +96,81 @@ class Global_Market_Loader:
         return []
 
 # =============================================================================
-# 2. 核心引擎 (V86 邏輯 + V89 PEG升級)
+# 2. [V90 Restoration] 回測引擎 (Backtest Engine)
+# =============================================================================
+class Backtest_Engine:
+    @staticmethod
+    def run_backtest(ticker):
+        """
+        模擬 Elder Impulse System 策略回測
+        規則: Green Bar (EMA升+MACD升) 買入, Red/Blue Bar (EMA降 OR MACD降) 賣出
+        """
+        try:
+            # 下載 2 年數據
+            df = robust_download(ticker, "2y")
+            if df.empty or len(df) < 100: return None
+
+            # 計算指標
+            df['EMA22'] = df['Close'].ewm(span=22).mean()
+            ema12 = df['Close'].ewm(span=12).mean()
+            ema26 = df['Close'].ewm(span=26).mean()
+            df['MACD'] = ema12 - ema26
+            df['Signal'] = df['MACD'].ewm(span=9).mean()
+            df['Hist'] = df['MACD'] - df['Signal']
+            
+            # 定義狀態
+            # Green: EMA Rising AND Hist Rising
+            df['Green'] = (df['EMA22'] > df['EMA22'].shift(1)) & (df['Hist'] > df['Hist'].shift(1))
+            
+            # 回測邏輯
+            position = 0 # 0: 空手, 1: 持有
+            entry_price = 0
+            trades = []
+            equity = [100000] # 初始本金 10萬
+            
+            for i in range(1, len(df)):
+                price = df['Close'].iloc[i]
+                date = df.index[i]
+                
+                # Buy Signal (Green)
+                if position == 0 and df['Green'].iloc[i]:
+                    position = 1
+                    entry_price = price
+                    trades.append({'date': date, 'type': 'Buy', 'price': price, 'profit': 0})
+                
+                # Sell Signal (Not Green) -> 嚴格出場
+                elif position == 1 and not df['Green'].iloc[i]:
+                    position = 0
+                    profit = (price - entry_price) / entry_price
+                    new_eq = equity[-1] * (1 + profit)
+                    equity.append(new_eq)
+                    trades.append({'date': date, 'type': 'Sell', 'price': price, 'profit': profit})
+                
+                # 更新權益曲線 (若持倉則隨股價變動)
+                if position == 1:
+                    curr_profit = (price - entry_price) / entry_price
+                    equity.append(equity[-1] * (1 + (df['Close'].iloc[i]/df['Close'].iloc[i-1] - 1)))
+                else:
+                    equity.append(equity[-1]) # 空手資金不動
+
+            # 統計數據
+            total_ret = (equity[-1] - 100000) / 100000
+            win_rate = len([t for t in trades if t['type']=='Sell' and t['profit']>0]) / len([t for t in trades if t['type']=='Sell']) if trades else 0
+            
+            # 製作圖表數據
+            chart_df = pd.DataFrame({'Equity': equity[-len(df):]}, index=df.index)
+            
+            return {
+                "total_return": total_ret,
+                "win_rate": win_rate,
+                "trades": len(trades),
+                "equity_curve": chart_df,
+                "last_equity": equity[-1]
+            }
+        except: return None
+
+# =============================================================================
+# 3. 核心引擎 (V89 PEG + V85 Risk + V84 News)
 # =============================================================================
 class Macro_Risk_Engine:
     @staticmethod
@@ -145,45 +218,28 @@ class FinMind_Engine:
 class News_Intel_Engine:
     @staticmethod
     def fetch_news(ticker):
-        """
-        [V89 Upgrade] 高可信度新聞引擎
-        1. 美股：使用 yfinance 官方新聞源 (Reuters/Bloomberg)
-        2. 台股：使用 Google RSS 但嚴格過濾關鍵字
-        3. 回傳：新聞列表 + 綜合情緒分數 (-1.0 ~ 1.0)
-        """
         items = []
-        sentiment_score = 0 # 累計情緒分
-        
+        sentiment_score = 0
         try:
-            # --- 策略 A: 美股 (yf.News) ---
             if "-USD" in ticker or ".TW" not in ticker:
                 try:
-                    stock = yf.Ticker(ticker)
-                    raw_news = stock.news
+                    stock = yf.Ticker(ticker); raw_news = stock.news
                     for item in raw_news[:5]:
                         title = item.get('title'); link = item.get('link')
                         pub_time = item.get('providerPublishTime')
                         date = pd.to_datetime(pub_time, unit='s').strftime('%m-%d')
-                        
                         sent = "neu"; s_val = 0
                         tl = title.lower()
                         if any(x in tl for x in ["soar","jump","beat","upgrade","record","buy"]): sent="pos"; s_val=1
                         elif any(x in tl for x in ["plunge","drop","miss","downgrade","warn","sell"]): sent="neg"; s_val=-1
-                        
                         items.append({"title": title, "link": link, "date": date, "sent": sent})
                         sentiment_score += s_val
                 except: pass
 
-            # --- 策略 B: 台股/備援 (Google RSS + Strict Filter) ---
             if not items:
                 query = ticker.split('.')[0]
-                if ".TW" in ticker: 
-                    # [V89] 嚴格關鍵字：只看營收/法說/外資
-                    query += " (營收 OR 法說 OR 外資 OR EPS OR 財報) when:7d"
-                    lang = "hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-                else: 
-                    query += " stock finance when:7d"
-                    lang = "hl=en-US&gl=US&ceid=US:en"
+                if ".TW" in ticker: query += " (營收 OR 法說 OR 外資 OR EPS OR 財報) when:7d"; lang = "hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+                else: query += " stock finance when:7d"; lang = "hl=en-US&gl=US&ceid=US:en"
                 
                 url = f"https://news.google.com/rss/search?q={query}&{lang}"
                 resp = requests.get(url, timeout=3)
@@ -193,25 +249,19 @@ class News_Intel_Engine:
                     for item in root.findall('.//item'):
                         if count >= 4: break
                         title = item.find('title').text
-                        # [V89] 垃圾過濾
                         if any(x in title for x in ["影片","直播","開箱","閒聊","PTT"]): continue
-                        
                         link = item.find('link').text
                         pub_date = item.find('pubDate')
                         date = pub_date.text[5:16] if pub_date is not None else "Recent"
-                        
                         sent = "neu"; s_val = 0
                         if any(x in title for x in ["漲","高","Bull","Beat","大增","看好"]): sent="pos"; s_val=1
                         elif any(x in title for x in ["跌","低","Bear","Miss","大減","看淡"]): sent="neg"; s_val=-1
-                        
                         items.append({"title": title, "link": link, "date": date, "sent": sent})
                         sentiment_score += s_val
                         count += 1
             
-            # 正規化情緒分數 (-1 ~ 1)
             final_sentiment = max(-1, min(1, sentiment_score / 3)) if items else 0
             return items, final_sentiment
-            
         except: return [], 0
 
 class Scanner_Engine_Elder:
@@ -220,51 +270,35 @@ class Scanner_Engine_Elder:
         try:
             df = robust_download(ticker, "6mo")
             if df.empty or len(df) < 50: return None
-            
             c = df['Close']; ema22 = c.ewm(span=22).mean()
-            score = 60 # 基礎分
-            
+            score = 60
             if c.iloc[-1] > ema22.iloc[-1]: score += 20
             else: score -= 20
-            
             return {"ticker": ticker, "price": c.iloc[-1], "score": score, "sl": ema22.iloc[-1]*0.98}
         except: return None
 
-# =============================================================================
-# 3. 分析引擎 (Micro / Factor / PEG Valuation / Risk)
-# =============================================================================
 class Micro_Engine_Pro:
     @staticmethod
     def analyze(ticker):
         df = robust_download(ticker, "1y")
         if df.empty or len(df) < 30: return 50, ["數據不足"], df, 0, None
-        
         try:
             c = df['Close']; v = df['Volume']
             score = 50; signals = []
-            
-            # Elder Indicators
             ema22 = c.ewm(span=22).mean()
             if c.iloc[-1] > ema22.iloc[-1]: score += 10
-            
-            # MACD & Force
             ema12 = c.ewm(span=12).mean(); ema26 = c.ewm(span=26).mean(); macd = ema12 - ema26
             hist = macd - macd.ewm(span=9).mean()
             fi = c.diff() * v; fi_13 = fi.ewm(span=13).mean()
-            
             if (ema22.iloc[-1] > ema22.iloc[-2]) and (hist.iloc[-1] > hist.iloc[-2]): score += 20; signals.append("Impulse Green")
             if fi_13.iloc[-1] > 0: score += 10
-            
-            # Chips Integration
             chips = FinMind_Engine.get_tw_chips(ticker)
             if chips:
                 if chips['latest'] > 1000: score += 15; signals.append(f"外資買超{chips['latest']}")
                 elif chips['latest'] < -1000: score -= 15; signals.append(f"外資賣超{abs(chips['latest'])}")
-            
             atr = (df['High']-df['Low']).rolling(14).mean().iloc[-1]
             df['EMA22'] = ema22; df['MACD_Hist'] = hist; df['Force'] = fi_13
             df['K_Upper'] = ema22 + 2*atr; df['K_Lower'] = ema22 - 2*atr
-            
             return score, signals, df, atr, chips
         except: return 50, ["計算錯誤"], df, 0, None
 
@@ -276,12 +310,10 @@ class Factor_Engine:
             def g(k, d=None): return info.get(k, d)
             pe = g('trailingPE', 20); roe = g('returnOnEquity', 0.1)
             rev_g = g('revenueGrowth', 0.05); beta = g('beta', 1.0)
-            
             val_s = 60 if pe < 25 else 40
             gro_s = min(100, int(rev_g * 400)) if rev_g else 50
             qual_s = 70 if roe > 0.15 else 40
             vol_s = 80 if beta < 1.0 else 40
-            
             return {"scores": {"Value": val_s, "Growth": gro_s, "Quality": qual_s, "LowVol": vol_s}, 
                     "raw": {"PE": pe, "ROE": roe, "Beta": beta, "RevG": rev_g}}
         except: return None
@@ -289,52 +321,17 @@ class Factor_Engine:
 class PEG_Valuation_Engine:
     @staticmethod
     def calculate(ticker, sentiment_score=0):
-        """
-        [V89 New] PEG 動態估值模型
-        邏輯：新聞情緒影響市場對 PEG 的容忍度，進而修正合理價。
-        Fair Price = EPS * (Base PEG * Sentiment_Adj) * Growth
-        """
         try:
             stock = yf.Ticker(ticker); info = stock.info
             price = info.get('currentPrice', 0)
             if price == 0: price = info.get('regularMarketPrice', 0)
             if price == 0: return None
-            
-            # 1. 獲取核心參數
-            pe = info.get('trailingPE', None)
-            peg = info.get('pegRatio', None)
-            growth = info.get('earningsGrowth', None) # 預估成長率
-            
-            # 防呆：如果數據缺失，給予保守預設或直接回傳 None
-            if not pe or not growth: 
-                # 備案：簡單動能估值
-                return {"fair": price, "method": "Price Only (No Data)", "peg_used": 0}
-
-            # 如果 PEG 沒抓到，自己算
-            if not peg: peg = pe / (growth * 100)
-            
-            # 2. 新聞情緒修正 (Sentiment Adjustment)
-            # 情緒 +1 (極好) -> PEG 可上調 20%
-            # 情緒 -1 (極差) -> PEG 下調 20%
-            adj_factor = 1 + (sentiment_score * 0.2) 
-            target_peg = peg * adj_factor
-            
-            # 3. 計算合理價
-            # Implied Fair PE = Target PEG * (Growth * 100)
-            # Fair Price = (Price / PE) * Fair PE  => Price * (Fair PE / PE)
-            fair_pe = target_peg * (growth * 100)
-            fair_price = (price / pe) * fair_pe
-            
-            return {
-                "fair": fair_price,
-                "scenarios": {
-                    "Bear": fair_price * 0.85, 
-                    "Bull": fair_price * 1.15
-                },
-                "method": "PEG Adjusted",
-                "peg_used": round(target_peg, 2),
-                "sentiment_impact": f"{sentiment_score*20:+.0f}%"
-            }
+            pe = info.get('trailingPE', None); growth = info.get('earningsGrowth', None)
+            if not pe or not growth: return {"fair": price, "method": "Price Only", "peg_used": 0}
+            peg = pe / (growth * 100)
+            target_peg = peg * (1 + (sentiment_score * 0.2))
+            fair_price = (price / pe) * (target_peg * growth * 100)
+            return {"fair": fair_price, "scenarios": {"Bear": fair_price * 0.85, "Bull": fair_price * 1.15}, "method": "PEG Adjusted", "peg_used": round(target_peg, 2), "sentiment_impact": f"{sentiment_score*20:+.0f}%"}
         except: return None
 
 class Risk_Manager:
@@ -360,18 +357,16 @@ class Message_Generator:
         elif hybrid_score >= 60: tag = "✅ 買進 (Buy)"; bg_color = "#1f6feb"
         elif hybrid_score <= 40: tag = "❄️ 弱勢 (Weak)"; bg_color = "#888"
         elif hybrid_score <= 20: tag = "⛔ 危險 (Danger)"; bg_color = "#f85149"
-        
         reasons = []
         if m_score >= 70: reasons.append("技術面動能強勁")
         if chips and chips['5d'] > 0: reasons.append("外資籌碼進駐")
-        
         comment = f"{ticker} 目前呈現 {tag.split(' ')[1]} 狀態。"
         if reasons: comment += "主因：" + "，且".join(reasons) + "。"
         else: comment += "建議耐心等待明確訊號。"
         return tag, comment, bg_color
 
 # =============================================================================
-# MAIN UI (V89 整合)
+# MAIN UI (V90)
 # =============================================================================
 def main():
     st.sidebar.markdown("## ⚙️ 戰情控制台")
@@ -379,24 +374,52 @@ def main():
     target_in = st.sidebar.text_input("代碼", "2330.TW").upper()
     if st.sidebar.button("分析單一標的"): st.session_state.target = target_in
     
-    # 掃描器
+    # [V90 Restoration] 掃描器 (含 CSV 匯入)
     st.sidebar.markdown("---")
     with st.sidebar.expander("📡 主動掃描器"):
-        market = st.selectbox("市場", ["🇹🇼 台股", "🇺🇸 美股"])
-        if st.button("🚀 啟動掃描"):
-            with st.spinner("Deep Scanning..."):
-                tickers = Global_Market_Loader.get_scan_list(market)
-                res = []
-                bar = st.progress(0)
-                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as exe:
-                    futures = {exe.submit(Scanner_Engine_Elder.analyze_single, t): t for t in tickers}
-                    done = 0
-                    for f in concurrent.futures.as_completed(futures):
-                        r = f.result(); done += 1
-                        if r: res.append(r)
-                        bar.progress(done/len(tickers))
-                st.session_state.scan_results = sorted(res, key=lambda x: x['score'], reverse=True)
-                bar.empty()
+        # 恢復 Radio 選項
+        scan_source = st.radio("來源", ["線上掃描", "CSV匯入"])
+        
+        if scan_source == "線上掃描":
+            market = st.selectbox("市場", ["🇹🇼 台股", "🇺🇸 美股"])
+            if st.button("🚀 啟動掃描"):
+                with st.spinner("Deep Scanning..."):
+                    tickers = Global_Market_Loader.get_scan_list(market)
+                    res = []
+                    bar = st.progress(0)
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as exe:
+                        futures = {exe.submit(Scanner_Engine_Elder.analyze_single, t): t for t in tickers}
+                        done = 0
+                        for f in concurrent.futures.as_completed(futures):
+                            r = f.result(); done += 1
+                            if r: res.append(r)
+                            bar.progress(done/len(tickers))
+                    st.session_state.scan_results = sorted(res, key=lambda x: x['score'], reverse=True)
+                    bar.empty()
+        else:
+            # [V90] CSV 匯入邏輯回歸
+            uploaded = st.file_uploader("上傳代碼清單 (CSV)", type=['csv'])
+            if uploaded:
+                try:
+                    df_up = pd.read_csv(uploaded)
+                    # 容錯處理：找第一欄當作 ticker
+                    if not df_up.empty:
+                        tickers = df_up.iloc[:, 0].astype(str).tolist()
+                        st.success(f"讀取到 {len(tickers)} 檔代碼，準備掃描...")
+                        if st.button("🚀 掃描上傳清單"):
+                            res = []
+                            bar = st.progress(0)
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as exe:
+                                futures = {exe.submit(Scanner_Engine_Elder.analyze_single, t): t for t in tickers}
+                                done = 0
+                                for f in concurrent.futures.as_completed(futures):
+                                    r = f.result(); done += 1
+                                    if r: res.append(r)
+                                    bar.progress(done/len(tickers))
+                            st.session_state.scan_results = sorted(res, key=lambda x: x['score'], reverse=True)
+                            bar.empty()
+                except:
+                    st.error("CSV 格式錯誤，請確保第一欄為股票代碼")
 
     if "target" not in st.session_state: st.session_state.target = "2330.TW"
     if "scan_results" not in st.session_state: st.session_state.scan_results = []
@@ -419,7 +442,7 @@ def main():
                 <div style="color:#aaa; font-size:12px;">VIX: {vix:.1f} | {' '.join(risk_dtls)}</div>
             </div>
         </div>
-        <div style="font-family:'Rajdhani'; color:#ffae00; font-size:24px; font-weight:bold;">MARCS <span style="font-size:14px; color:#888;">V89 PEG</span></div>
+        <div style="font-family:'Rajdhani'; color:#ffae00; font-size:24px; font-weight:bold;">MARCS <span style="font-size:14px; color:#888;">V90</span></div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -436,14 +459,16 @@ def main():
         with concurrent.futures.ThreadPoolExecutor() as executor:
             f_micro = executor.submit(Micro_Engine_Pro.analyze, target)
             f_factor = executor.submit(Factor_Engine.analyze, target)
-            f_news = executor.submit(News_Intel_Engine.fetch_news, target) # 回傳 items, sentiment
+            f_news = executor.submit(News_Intel_Engine.fetch_news, target)
             
             m_score, sigs, df_m, atr, chips = f_micro.result()
             factor_data = f_factor.result()
             news_items, sentiment_score = f_news.result()
             
-            # [V89] PEG 估值需要新聞情緒
             dcf_res = PEG_Valuation_Engine.calculate(target, sentiment_score)
+            
+            # [V90] 觸發回測運算
+            backtest_res = Backtest_Engine.run_backtest(target)
 
         hybrid = int((risk_score * 0.3) + (m_score * 0.7))
         curr_p = df_m['Close'].iloc[-1] if not df_m.empty else 0
@@ -473,9 +498,9 @@ def main():
     with c3: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">新聞情緒 (News)</div><div class="highlight-val">{sentiment_score:+.2f}</div><div class="smart-text">PEG 修正係數</div></div>""", unsafe_allow_html=True)
     with c4: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">建議倉位 %</div><div class="highlight-val">{risk_dets['pct']}%</div><div class="smart-text">${risk_dets['cap']:,}</div></div>""", unsafe_allow_html=True)
 
-    # --- 4. Tabs ---
+    # --- 4. Tabs (V90 新增 "策略回測" 分頁) ---
     st.markdown("#### 📊 全域戰術圖表")
-    tab1, tab2, tab3 = st.tabs(["🕯️ 技術主圖", "🧬 PEG 估值矩陣", "📰 情報中心"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🕯️ 技術主圖", "🧬 PEG 估值", "📰 情報中心", "🔄 策略回測"])
     
     with tab1:
         if not df_m.empty:
@@ -491,11 +516,11 @@ def main():
             fig2, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 4), sharex=True)
             hist = df_m['MACD_Hist'].tail(60)
             cols = ['#4caf50' if h>0 else '#f44336' for h in hist]
-            ax1.bar(hist.index, hist, color=cols, alpha=0.8); ax1.set_title("MACD Momentum", color='white', fontsize=10)
+            ax1.bar(hist.index, hist, color=cols, alpha=0.8); ax1.set_title("MACD Momentum", color='#8b949e', fontsize=10)
             ax1.set_facecolor('#0d1117'); ax1.tick_params(colors='#8b949e')
             
             fi = df_m['Force'].tail(60)
-            ax2.plot(fi.index, fi, color='#00f2ff', lw=1); ax2.set_title("Force Index", color='white', fontsize=10)
+            ax2.plot(fi.index, fi, color='#00f2ff', lw=1); ax2.set_title("Force Index", color='#8b949e', fontsize=10)
             ax2.axhline(0, color='gray', ls='--')
             ax2.set_facecolor('#0d1117'); ax2.tick_params(colors='#8b949e')
             fig2.patch.set_facecolor('#0d1117'); st.pyplot(fig2)
@@ -540,6 +565,19 @@ def main():
                     st.markdown(f"""<div class="news-card" style="border-left:3px solid {bd}; margin-bottom:10px;"><a href="{item['link']}" target="_blank" class="news-title">{item['title']}</a><div class="news-meta">{item['date']}</div></div>""", unsafe_allow_html=True)
         else:
             st.info("暫無精準情報")
+
+    # [V90] 回測圖表分頁
+    with tab4:
+        if backtest_res:
+            b1, b2, b3 = st.columns(3)
+            with b1: st.metric("總報酬 (2Y)", f"{backtest_res['total_return']:.1%}")
+            with b2: st.metric("勝率 (Win Rate)", f"{backtest_res['win_rate']:.1%}")
+            with b3: st.metric("總交易次數", backtest_res['trades'])
+            
+            st.line_chart(backtest_res['equity_curve'])
+            st.caption("策略邏輯：Elder Impulse System (Green Bar 買進, Red/Blue Bar 賣出)")
+        else:
+            st.warning("數據不足，無法執行回測")
 
 if __name__ == "__main__":
     main()
