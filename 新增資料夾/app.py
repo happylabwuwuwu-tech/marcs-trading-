@@ -471,6 +471,9 @@ class Message_Generator:
 # =============================================================================
 # MAIN UI
 # =============================================================================
+# =============================================================================
+# MAIN UI (修復完整版)
+# =============================================================================
 def main():
     st.sidebar.markdown("## ⚙️ 戰情控制台")
     capital = st.sidebar.number_input("本金 (Capital)", value=1000000, step=10000)
@@ -493,7 +496,6 @@ def main():
                     res = []
                     bar = st.progress(0)
                     
-                    # 使用線程池加速掃描
                     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as exe:
                         futures = {exe.submit(Scanner_Engine_Elder.analyze_single, t): t for t in tickers}
                         done = 0
@@ -509,6 +511,160 @@ def main():
             if uploaded:
                 try:
                     df_up = pd.read_csv(uploaded)
+                    # 假設第一欄是代碼
                     tickers = df_up.iloc[:, 0].astype(str).tolist()
                     if st.button("🚀 掃描上傳清單"):
-                        res =
+                        res = []
+                        bar = st.progress(0)
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as exe:
+                            futures = {exe.submit(Scanner_Engine_Elder.analyze_single, t): t for t in tickers}
+                            done = 0
+                            for f in concurrent.futures.as_completed(futures):
+                                r = f.result(); done += 1
+                                if r: res.append(r)
+                                bar.progress(done/len(tickers))
+                        st.session_state.scan_results = sorted(res, key=lambda x: x['score'], reverse=True)
+                        bar.empty()
+                except: st.error("CSV 格式錯誤")
+
+    if "scan_results" not in st.session_state: st.session_state.scan_results = []
+    target = st.session_state.target
+
+    # 1. Macro Risk
+    risk, risk_d, vix = Macro_Risk_Engine.calculate_market_risk()
+    st.markdown(f"""<div class="risk-container"><div class="risk-val" style="color:#4caf50">{risk}</div><div style="color:#aaa">MARKET RISK (VIX: {vix:.1f})</div></div>""", unsafe_allow_html=True)
+
+    # Scanner Results Display
+    if st.session_state.scan_results:
+        with st.expander("🔭 掃描結果 (Scan Results)"):
+            st.dataframe(pd.DataFrame(st.session_state.scan_results), use_container_width=True)
+            # 讓使用者選擇掃描結果
+            scan_tickers = [r['ticker'] for r in st.session_state.scan_results]
+            sel = st.selectbox("Load Result:", scan_tickers)
+            if st.button("Load Selected"): 
+                st.session_state.target = sel
+                st.rerun()
+
+    # 2. Analysis Execution
+    with st.spinner(f"Scanning {target} (Elder + SMC FVG)..."):
+        # 使用 ThreadPool 平行處理多個分析任務
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            f_micro = executor.submit(Micro_Engine_Pro.analyze, target)
+            f_news = executor.submit(News_Intel_Engine.fetch_news, target)
+            
+            # 獲取結果
+            m_score, sigs, df_m, atr, chips, curr_p, _, fvgs = f_micro.result()
+            news, sent = f_news.result()
+            
+            # 這些計算依賴上面的結果，所以放在外面
+            dcf_res = PEG_Valuation_Engine.calculate(target, sent)
+            backtest = Backtest_Engine.run_backtest(target)
+
+        # 混合評分 (Macro 30% + Micro 70%)
+        hybrid = int((risk * 0.3) + (m_score * 0.7))
+        
+        # [V96] 計算 SL / TP (戰術面板)
+        sl_p = curr_p - 2.5 * atr if atr > 0 else 0
+        tp_p = curr_p + 4.0 * atr if atr > 0 else 0
+        risk_pct = round((sl_p / curr_p - 1)*100, 2) if curr_p > 0 else 0
+        size, r_d = Risk_Manager.calculate(capital, curr_p, sl_p, target, hybrid)
+
+    # 3. Verdict & UI
+    tag, comm, bg = Message_Generator.get_verdict(target, hybrid, m_score, chips, fvgs)
+    
+    # 標題區
+    c_tag = f"<span class='chip-tag' style='background:#f44336'>外資 {chips['latest']}</span>" if chips else ""
+    st.markdown(f"<h1 style='color:white'>{target} <span style='color:#ffae00'>${curr_p:.2f}</span> {c_tag}</h1>", unsafe_allow_html=True)
+    st.markdown(f"""<div class="verdict-box" style="background:{bg}30; border-color:{bg}"><h2 style="margin:0; color:{bg}">{tag}</h2><p style="margin-top:5px; color:#ccc">{comm}</p></div>""", unsafe_allow_html=True)
+
+    # [V96] 戰術面板 (Tactical Panel)
+    t1, t2, t3, t4 = st.columns(4)
+    with t1: st.markdown(f"""<div class="tac-card"><div><div class="tac-label">ATR (Volatility)</div><div class="tac-val">{atr:.2f}</div></div><div class="tac-sub">Risk Unit</div></div>""", unsafe_allow_html=True)
+    with t2: st.markdown(f"""<div class="tac-card" style="border-color:#f44336"><div><div class="tac-label">STOP LOSS</div><div class="tac-val" style="color:#f44336">${sl_p:.2f}</div></div><div class="tac-sub">{risk_pct}% Risk</div></div>""", unsafe_allow_html=True)
+    with t3: st.markdown(f"""<div class="tac-card" style="border-color:#4caf50"><div><div class="tac-label">TAKE PROFIT</div><div class="tac-val" style="color:#4caf50">${tp_p:.2f}</div></div><div class="tac-sub">Reward 1.6x</div></div>""", unsafe_allow_html=True)
+    with t4: st.markdown(f"""<div class="tac-card"><div><div class="tac-label">SUGGESTED SIZE</div><div class="tac-val">{r_d['pct']}%</div></div><div class="tac-sub">${r_d['cap']:,}</div></div>""", unsafe_allow_html=True)
+
+    # 數據卡片
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">技術評分</div><div class="highlight-val">{m_score}</div><div class="smart-text">{sigs[0] if sigs else '盤整'}</div></div>""", unsafe_allow_html=True)
+    with c2: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">宏觀風險</div><div class="highlight-val">{risk}</div><div class="smart-text">VIX: {vix:.1f}</div></div>""", unsafe_allow_html=True)
+    with c3: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">PEG 情緒修正</div><div class="highlight-val">{sent:+.2f}</div><div class="smart-text">News Adj</div></div>""", unsafe_allow_html=True)
+    with c4: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">SMC 訊號</div><div class="highlight-val">{len(fvgs)}</div><div class="smart-text">Active FVG</div></div>""", unsafe_allow_html=True)
+
+    # 4. Tabs & Charts
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 SMC 戰術圖表", "🧬 估值模型", "📰 情報中心", "🔄 策略回測"])
+    
+    with tab1:
+        if not df_m.empty and 'EMA22' in df_m.columns:
+            # Price Chart
+            fig, ax = plt.subplots(figsize=(12, 5))
+            ax.plot(df_m.index, df_m['Close'], color='#e0e0e0', lw=1.5, label='Price')
+            ax.plot(df_m.index, df_m['EMA22'], color='#ffae00', lw=1.5, label='EMA 22')
+            
+            # [V96] 繪製 FVG 區塊
+            for fvg in fvgs:
+                color = 'green' if fvg['type'] == 'Bull' else 'red'
+                # 繪製矩形
+                rect = patches.Rectangle((fvg['idx'], fvg['bottom']), width=timedelta(days=5), height=fvg['top']-fvg['bottom'], linewidth=0, edgecolor=None, facecolor=color, alpha=0.3)
+                ax.add_patch(rect)
+                ax.text(fvg['idx'], fvg['top'], f" {fvg['type']} FVG", color=color, fontsize=8, verticalalignment='bottom')
+
+            ax.axhline(sl_p, color='#f44336', ls='--', label=f'SL: {sl_p:.2f}')
+            ax.axhline(tp_p, color='#4caf50', ls='--', label=f'TP: {tp_p:.2f}')
+            ax.legend(loc='upper left')
+            ax.set_facecolor('#0d1117'); fig.patch.set_facecolor('#0d1117')
+            ax.tick_params(colors='#888'); ax.grid(True, color='#333', alpha=0.3)
+            st.pyplot(fig)
+            plt.close(fig) # 釋放記憶體
+            
+            # Indicators Chart
+            fig2, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 4), sharex=True)
+            
+            # MACD
+            hist = df_m['MACD_Hist'].tail(60)
+            cols = ['#4caf50' if h>0 else '#f44336' for h in hist]
+            ax1.bar(hist.index, hist, color=cols, alpha=0.8); ax1.set_title("MACD Histogram", color='white', fontsize=10)
+            ax1.set_facecolor('#0d1117'); ax1.tick_params(colors='#888')
+            
+            # Force Index
+            fi = df_m['Force'].tail(60)
+            ax2.plot(fi.index, fi, color='#00f2ff', lw=1); ax2.set_title("Force Index (13)", color='white', fontsize=10)
+            ax2.axhline(0, color='gray', ls='--')
+            ax2.set_facecolor('#0d1117'); ax2.tick_params(colors='#888')
+            
+            fig2.patch.set_facecolor('#0d1117')
+            st.pyplot(fig2)
+            plt.close(fig2)
+        else: st.warning("數據不足，無法繪圖")
+
+    with tab2:
+        if dcf_res:
+            c_v1, c_v2 = st.columns(2)
+            with c_v1: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">PEG 合理價</div><div class="highlight-val">${dcf_res['fair']:.2f}</div><div class="smart-text">Method: {dcf_res['method']}</div></div>""", unsafe_allow_html=True)
+            with c_v2: 
+                st.write("#### 估值情境 (Scenarios)")
+                st.json(dcf_res['scenarios'])
+                st.caption(f"PEG Used: {dcf_res['peg_used']} | Sentiment Impact: {dcf_res['sentiment_impact']}")
+        else: st.info("無法計算 PEG (可能缺乏盈利數據)")
+
+    with tab3:
+        if news:
+            cols = st.columns(3)
+            for i, item in enumerate(news):
+                bd = "#4caf50" if item['sent']=="pos" else "#f44336" if item['sent']=="neg" else "#444"
+                with cols[i%3]: st.markdown(f"""<div class="news-card" style="border-left:3px solid {bd}"><a href="{item['link']}" target="_blank" class="news-title">{item['title']}</a><div class="news-meta" style="color:#666; font-size:12px; margin-top:5px;">{item['date']}</div></div>""", unsafe_allow_html=True)
+        else: st.info("無近期新聞")
+
+    with tab4:
+        if backtest:
+            b1, b2 = st.columns([1, 3])
+            with b1: 
+                ret_color = "green" if backtest['total_return'] > 0 else "red"
+                st.markdown(f"### 總報酬 (2Y)\n<span style='color:{ret_color}; font-size:24px; font-weight:bold'>{backtest['total_return']:.1%}</span>", unsafe_allow_html=True)
+                st.caption("策略：EMA22 趨勢 + MACD 動能")
+            with b2:
+                st.line_chart(backtest['equity_curve'], color="#ffae00")
+        else: st.warning("數據不足，無法回測")
+
+if __name__ == "__main__":
+    main()
