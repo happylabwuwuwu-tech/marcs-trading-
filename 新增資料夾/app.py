@@ -1,5 +1,6 @@
 import sys
 import os
+import types
 
 # =============================================================================
 # 0. 系統補丁 (Fix for Python 3.12+ & pandas_datareader)
@@ -8,18 +9,14 @@ import os
 try:
     import distutils.version
 except ImportError:
-    import types
-    # 定義一個假的 distutils 模組
     if 'distutils' not in sys.modules:
         sys.modules['distutils'] = types.ModuleType('distutils')
     if 'distutils.version' not in sys.modules:
         sys.modules['distutils.version'] = types.ModuleType('distutils.version')
     
-    # 使用 packaging.version 來替代 LooseVersion
     try:
         from packaging.version import Version as LooseVersion
     except ImportError:
-        # 如果沒有 packaging，使用簡單的替代類別
         class LooseVersion:
             def __init__(self, vstring): self.vstring = vstring
             def __ge__(self, other): return str(self.vstring) >= str(other.vstring)
@@ -43,6 +40,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import statsmodels.api as sm
 import pandas_datareader.data as web
+from FinMind.data import DataLoader
 
 # 過濾警告
 warnings.filterwarnings('ignore')
@@ -110,7 +108,6 @@ st.markdown("""
     
     .stButton>button { width: 100%; border-radius: 6px; font-weight: bold; border:none; background: linear-gradient(90deg, #333 0%, #ffae00 100%); color: white; }
     
-    /* 調整 Matplotlib 背景 */
     div[data-testid="stImage"] { background: transparent; }
 </style>
 """, unsafe_allow_html=True)
@@ -135,7 +132,7 @@ def robust_download(ticker, period="1y"):
             df['Close'] = df['Adj Close']
             
         if not df.empty and 'Close' in df.columns and len(df) > 0:
-            df.index = pd.to_datetime(df.index).tz_localize(None) # Remove TZ for F-F alignment
+            df.index = pd.to_datetime(df.index).tz_localize(None) 
             if df['Close'].iloc[-1] > 0:
                 return df
     except Exception as e:
@@ -177,22 +174,17 @@ class SMC_Engine:
         except Exception: return []
 
 # =============================================================================
-# 4. 六因子模型引擎 (Fama-French 5 + Momentum)
+# 4. 六因子模型引擎
 # =============================================================================
 class SixFactor_Engine:
     @staticmethod
-    @st.cache_data(ttl=86400) # Cache for 24 hours as F-F data updates slowly
+    @st.cache_data(ttl=86400)
     def get_ff_factors(start_date):
         """下載 Fama-French 5因子 + Momentum"""
         try:
-            # 1. 5 Factors (Daily)
             ff5 = web.DataReader('F-F_Research_Data_5_Factors_2x3_daily', 'famafrench', start=start_date)[0]
-            # 2. Momentum (Daily)
             mom = web.DataReader('F-F_Momentum_Factor_daily', 'famafrench', start=start_date)[0]
-            
-            # Merge
             factors = pd.concat([ff5, mom], axis=1).dropna()
-            # F-F data is in percentages (e.g., 0.5 means 0.5%), convert to decimals
             factors = factors / 100.0
             factors.rename(columns={'Mkt-RF': 'Mkt_RF', 'Mom   ': 'MOM'}, inplace=True)
             return factors
@@ -202,43 +194,31 @@ class SixFactor_Engine:
 
     @staticmethod
     def analyze_exposure(ticker_df, ticker_symbol):
-        """
-        執行回歸分析：Ri - Rf = a + b1*Mkt + b2*SMB + b3*HML + b4*RMW + b5*CMA + b6*MOM
-        """
         try:
             if ticker_df.empty or len(ticker_df) < 60: return None
-            
-            # 準備數據
             start_date = ticker_df.index[0]
             factors = SixFactor_Engine.get_ff_factors(start_date)
-            
             if factors.empty: return None
             
-            # 對齊日期
             combined = pd.concat([ticker_df['Close'].pct_change().dropna(), factors], axis=1, join='inner').dropna()
-            
             if len(combined) < 30: return None
             
-            # 計算超額報酬 (Stock Return - Risk Free Rate)
             y = combined['Close'] - combined['RF']
             X = combined[['Mkt_RF', 'SMB', 'HML', 'RMW', 'CMA', 'MOM']]
             X = sm.add_constant(X)
             
-            # OLS 回歸
             model = sm.OLS(y, X).fit()
-            
-            # 解析結果
             betas = model.params
             pvalues = model.pvalues
             rsquared = model.rsquared
             
             analysis = {
                 'Beta_Mkt': {'val': betas['Mkt_RF'], 'sig': pvalues['Mkt_RF'] < 0.05, 'desc': '市場連動性'},
-                'Beta_SMB': {'val': betas['SMB'], 'sig': pvalues['SMB'] < 0.05, 'desc': '規模 (Size)'}, # >0 Small, <0 Big
-                'Beta_HML': {'val': betas['HML'], 'sig': pvalues['HML'] < 0.05, 'desc': '價值 (Value)'}, # >0 Value, <0 Growth
-                'Beta_RMW': {'val': betas['RMW'], 'sig': pvalues['RMW'] < 0.05, 'desc': '獲利 (Profit)'}, # >0 Robust, <0 Weak
-                'Beta_CMA': {'val': betas['CMA'], 'sig': pvalues['CMA'] < 0.05, 'desc': '投資 (Inv)'},    # >0 Conservative, <0 Aggressive
-                'Beta_MOM': {'val': betas['MOM'], 'sig': pvalues['MOM'] < 0.05, 'desc': '動能 (Mom)'},    # >0 Trend Follower
+                'Beta_SMB': {'val': betas['SMB'], 'sig': pvalues['SMB'] < 0.05, 'desc': '規模 (Size)'}, 
+                'Beta_HML': {'val': betas['HML'], 'sig': pvalues['HML'] < 0.05, 'desc': '價值 (Value)'}, 
+                'Beta_RMW': {'val': betas['RMW'], 'sig': pvalues['RMW'] < 0.05, 'desc': '獲利 (Profit)'}, 
+                'Beta_CMA': {'val': betas['CMA'], 'sig': pvalues['CMA'] < 0.05, 'desc': '投資 (Inv)'},    
+                'Beta_MOM': {'val': betas['MOM'], 'sig': pvalues['MOM'] < 0.05, 'desc': '動能 (Mom)'},    
                 'R2': rsquared
             }
             return analysis
@@ -247,7 +227,124 @@ class SixFactor_Engine:
             return None
 
 # =============================================================================
-# 5. 核心分析引擎
+# 5. FinMind & Valuation (UPGRADED)
+# =============================================================================
+class FinMind_Engine:
+    @staticmethod
+    @st.cache_data(ttl=3600)
+    def get_tw_data(ticker):
+        if ".TW" not in ticker and ".TWO" not in ticker: 
+            return None
+        
+        stock_id = ticker.split('.')[0]
+        api = DataLoader()
+        start_date = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
+        
+        data_pack = {
+            "chips": 0,
+            "pe": None,
+            "growth": None,
+            "price": 0
+        }
+        
+        try:
+            # 1. 外資籌碼
+            df_chips = api.taiwan_stock_institutional_investors(stock_id=stock_id, start_date=start_date)
+            if not df_chips.empty:
+                f = df_chips[df_chips['name'] == 'Foreign_Investor']
+                if not f.empty:
+                    latest = f.iloc[-1]
+                    data_pack['chips'] = int((latest['buy'] - latest['sell']) / 1000)
+
+            # 2. 本益比 (PER)
+            df_per = api.taiwan_stock_per_pbr(stock_id=stock_id, start_date=start_date)
+            if not df_per.empty:
+                latest_pe = df_per.iloc[-1]['PER']
+                if latest_pe > 0: data_pack['pe'] = latest_pe
+
+            # 3. 月營收成長率
+            rev_start = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+            df_rev = api.taiwan_stock_month_revenue(stock_id=stock_id, start_date=rev_start)
+            if not df_rev.empty:
+                latest_growth = df_rev.iloc[-1]['revenue_year_growth']
+                if latest_growth is not None:
+                    data_pack['growth'] = latest_growth / 100.0
+
+            return data_pack
+        except Exception as e:
+            print(f"FinMind Error: {e}")
+            return None
+
+class PEG_Valuation_Engine:
+    @staticmethod
+    def calculate(ticker, sentiment_score=0):
+        try:
+            # --- 分支 A: 台股模式 (FinMind) ---
+            if ".TW" in ticker:
+                fm_data = FinMind_Engine.get_tw_data(ticker)
+                stock = yf.Ticker(ticker)
+                # 嘗試抓現價
+                try: price = stock.history(period="1d")['Close'].iloc[-1]
+                except: price = 0
+                
+                if fm_data and price > 0:
+                    pe = fm_data['pe']
+                    growth = fm_data['growth']
+                    if not pe: pe = stock.info.get('trailingPE')
+                    
+                    if pe and growth:
+                        peg = pe / (growth * 100)
+                        if peg <= 0: peg = 99 
+                        
+                        target_peg = peg * (1 + (sentiment_score * 0.2))
+                        fair_pe = (growth * 100) * 1.0 
+                        fair_price = (price / pe) * fair_pe * (1 + sentiment_score * 0.1)
+                        
+                        return {
+                            "fair": fair_price, 
+                            "scenarios": {"Bear": fair_price * 0.85, "Bull": fair_price * 1.15}, 
+                            "method": "FinMind PEG (TW)", 
+                            "peg_used": round(peg, 2), 
+                            "sentiment_impact": f"{sentiment_score*20:+.0f}%"
+                        }
+
+            # --- 分支 B: 美股/通用模式 (YF) ---
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            price = info.get('currentPrice', 0) or info.get('regularMarketPrice', 0)
+            if price == 0: return None
+            
+            pe = info.get('trailingPE', None)
+            growth = info.get('earningsGrowth', None) or info.get('revenueGrowth', None)
+
+            # [安全網] 避免 KeyError
+            if not pe or not growth: 
+                return {
+                    "fair": price, 
+                    "scenarios": {"Bear": price * 0.9, "Bull": price * 1.1},
+                    "method": "Price Only (No Data)", 
+                    "peg_used": 0, 
+                    "sentiment_impact": "0%"
+                }
+            
+            peg = pe / (growth * 100)
+            target_peg = peg * (1 + (sentiment_score * 0.2))
+            fair_pe = (growth * 100) * 1.0 
+            fair_price = (price / pe) * fair_pe * (1 + sentiment_score * 0.1)
+
+            return {
+                "fair": fair_price, 
+                "scenarios": {"Bear": fair_price * 0.85, "Bull": fair_price * 1.15}, 
+                "method": "PEG Adjusted (YF)", 
+                "peg_used": round(target_peg, 2), 
+                "sentiment_impact": f"{sentiment_score*20:+.0f}%"
+            }
+        except Exception as e:
+            print(f"Valuation Error: {e}")
+            return None
+
+# =============================================================================
+# 6. 核心分析引擎
 # =============================================================================
 class Micro_Engine_Pro:
     @staticmethod
@@ -266,7 +363,6 @@ class Micro_Engine_Pro:
             
             ema12 = c.ewm(span=12).mean(); ema26 = c.ewm(span=26).mean(); macd = ema12 - ema26
             hist = macd - macd.ewm(span=9).mean()
-            
             fi = c.diff() * v
             fi_13 = fi.ewm(span=13).mean()
             
@@ -286,22 +382,21 @@ class Micro_Engine_Pro:
             if in_bull_fvg: score += 15; signals.append("Testing Bullish FVG")
             if in_bear_fvg: score -= 15; signals.append("Testing Bearish FVG")
             
-            # 3. Chips & ATR
-            chips = FinMind_Engine.get_tw_chips(ticker)
-            if chips:
-                if chips['latest'] > 1000: score += 15
-                elif chips['latest'] < -1000: score -= 15
+            # 3. Chips (Hybrid: FinMind or YF)
+            chips = None
+            if ".TW" in ticker:
+                fm_data = FinMind_Engine.get_tw_data(ticker)
+                if fm_data and fm_data['chips'] != 0:
+                    chips = {'latest': fm_data['chips']}
+                    if chips['latest'] > 1000: score += 15
+                    elif chips['latest'] < -1000: score -= 15
             
             atr = (df['High']-df['Low']).rolling(14).mean().iloc[-1]
-            
             df['EMA22'] = ema22; df['MACD_Hist'] = hist; df['Force'] = fi_13
             
-            # [NEW] 4. Run 6-Factor Model
+            # 4. Run 6-Factor Model
             ff_analysis = SixFactor_Engine.analyze_exposure(df, ticker)
-            
-            # Adjust score based on F-F Alpha factors
             if ff_analysis:
-                # 獎勵高獲利 (RMW > 0) 和高動能 (MOM > 0)
                 if ff_analysis['Beta_RMW']['val'] > 0 and ff_analysis['Beta_RMW']['sig']: score += 5
                 if ff_analysis['Beta_MOM']['val'] > 0 and ff_analysis['Beta_MOM']['sig']: score += 5
             
@@ -324,36 +419,14 @@ class Scanner_Engine_Elder:
         except: return None
 
 # =============================================================================
-# 6. 輔助引擎
+# 7. 其他輔助與 UI
 # =============================================================================
-class FinMind_Engine:
-    @staticmethod
-    @st.cache_data(ttl=3600)
-    def get_tw_chips(ticker):
-        if ".TW" not in ticker and ".TWO" not in ticker: return None
-        try:
-            start_date = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
-            url = "https://api.finmindtrade.com/api/v4/data"
-            stock_id = ticker.split('.')[0]
-            params = { "dataset": "TaiwanStockInstitutionalInvestorsBuySell", "data_id": stock_id, "start_date": start_date }
-            res = requests.get(url, params=params, timeout=3)
-            data = res.json()
-            if data['msg'] == 'success' and data['data']:
-                df = pd.DataFrame(data['data'])
-                f = df[df['name'] == 'Foreign_Investor']
-                if not f.empty: 
-                    latest_buy = f.iloc[-1]['buy'] - f.iloc[-1]['sell']
-                    return {"latest": int(latest_buy/1000)}
-            return None
-        except: return None
-
 class News_Intel_Engine:
     @staticmethod
     @st.cache_data(ttl=3600)
     def fetch_news(ticker):
         items = []; sentiment_score = 0
         try:
-            # Google RSS Fallback
             query = ticker.split('.')[0]
             if ".TW" in ticker: 
                 query += " (營收 OR 法說 OR 外資) when:7d"
@@ -381,35 +454,6 @@ class News_Intel_Engine:
             final_sent = max(-1, min(1, sentiment_score / 3))
             return items, final_sent
         except: return [], 0
-
-class PEG_Valuation_Engine:
-    @staticmethod
-    def calculate(ticker, sentiment_score=0):
-        try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            price = info.get('currentPrice', 0) or info.get('regularMarketPrice', 0)
-            if price == 0: return None
-            
-            pe = info.get('trailingPE', None)
-            growth = info.get('earningsGrowth', None) or info.get('revenueGrowth', None)
-
-            if not pe or not growth: 
-                return {"fair": price, "method": "Price Only", "peg_used": 0, "sentiment_impact": "0%"}
-            
-            peg = pe / (growth * 100)
-            target_peg = peg * (1 + (sentiment_score * 0.2))
-            fair_pe = (growth * 100) * 1.0 
-            fair_price = (price / pe) * fair_pe * (1 + sentiment_score * 0.1)
-
-            return {
-                "fair": fair_price, 
-                "scenarios": {"Bear": fair_price * 0.85, "Bull": fair_price * 1.15}, 
-                "method": "PEG Adjusted", 
-                "peg_used": round(target_peg, 2), 
-                "sentiment_impact": f"{sentiment_score*20:+.0f}%"
-            }
-        except: return None
 
 class Risk_Manager:
     @staticmethod
@@ -496,7 +540,6 @@ class Message_Generator:
         if chips and chips['latest'] > 0: reasons.append("外資買超")
         if any(f['type']=='Bull' for f in fvgs): reasons.append("回測 Bullish FVG")
         
-        # Add F-F insights
         if ff_data:
             if ff_data['Beta_RMW']['val'] > 0 and ff_data['Beta_RMW']['sig']: reasons.append("高獲利因子")
             if ff_data['Beta_MOM']['val'] > 0 and ff_data['Beta_MOM']['sig']: reasons.append("動能因子強勢")
@@ -557,7 +600,6 @@ def main():
 
     if "scan_results" not in st.session_state: st.session_state.scan_results = []
     
-    # Scanner Results Display
     if st.session_state.scan_results:
         with st.expander("🔭 掃描結果 (Scan Results)"):
             st.dataframe(pd.DataFrame(st.session_state.scan_results), use_container_width=True)
@@ -579,7 +621,6 @@ def main():
             f_micro = executor.submit(Micro_Engine_Pro.analyze, target)
             f_news = executor.submit(News_Intel_Engine.fetch_news, target)
             
-            # [Updated] Returns ff_analysis now
             m_score, sigs, df_m, atr, chips, curr_p, _, fvgs, ff_analysis = f_micro.result()
             news, sent = f_news.result()
             
@@ -600,26 +641,22 @@ def main():
     st.markdown(f"<h1 style='color:white'>{target} <span style='color:#ffae00'>${curr_p:.2f}</span> {c_tag}</h1>", unsafe_allow_html=True)
     st.markdown(f"""<div class="verdict-box" style="background:{bg}30; border-color:{bg}"><h2 style="margin:0; color:{bg}">{tag}</h2><p style="margin-top:5px; color:#ccc">{comm}</p></div>""", unsafe_allow_html=True)
 
-    # Tactical Panel
     t1, t2, t3, t4 = st.columns(4)
     with t1: st.markdown(f"""<div class="tac-card"><div><div class="tac-label">ATR (Volatility)</div><div class="tac-val">{atr:.2f}</div></div><div class="tac-sub">Risk Unit</div></div>""", unsafe_allow_html=True)
     with t2: st.markdown(f"""<div class="tac-card" style="border-color:#f44336"><div><div class="tac-label">STOP LOSS</div><div class="tac-val" style="color:#f44336">${sl_p:.2f}</div></div><div class="tac-sub">{risk_pct}% Risk</div></div>""", unsafe_allow_html=True)
     with t3: st.markdown(f"""<div class="tac-card" style="border-color:#4caf50"><div><div class="tac-label">TAKE PROFIT</div><div class="tac-val" style="color:#4caf50">${tp_p:.2f}</div></div><div class="tac-sub">Reward 1.6x</div></div>""", unsafe_allow_html=True)
     with t4: st.markdown(f"""<div class="tac-card"><div><div class="tac-label">SUGGESTED SIZE</div><div class="tac-val">{r_d['pct']}%</div></div><div class="tac-sub">${r_d['cap']:,}</div></div>""", unsafe_allow_html=True)
 
-    # Data Cards
     c1, c2, c3, c4 = st.columns(4)
     with c1: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">技術評分</div><div class="highlight-val">{m_score}</div><div class="smart-text">{sigs[0] if sigs else '盤整'}</div></div>""", unsafe_allow_html=True)
     with c2: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">FF5 模型品質 (R²)</div><div class="highlight-val">{ff_analysis['R2']:.2f}</div><div class="smart-text">學術因子解釋力</div></div>""" if ff_analysis else "", unsafe_allow_html=True)
     with c3: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">PEG 情緒修正</div><div class="highlight-val">{sent:+.2f}</div><div class="smart-text">News Adj</div></div>""", unsafe_allow_html=True)
     with c4: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">SMC 訊號</div><div class="highlight-val">{len(fvgs)}</div><div class="smart-text">Active FVG</div></div>""", unsafe_allow_html=True)
 
-    # 4. Tabs & Charts
     tab1, tab2, tab3, tab4 = st.tabs(["📊 SMC 戰術圖表", "🧬 六因子與估值", "📰 情報中心", "🔄 策略回測"])
     
     with tab1:
         if not df_m.empty and 'EMA22' in df_m.columns:
-            # Price Chart
             fig, ax = plt.subplots(figsize=(12, 5))
             ax.plot(df_m.index, df_m['Close'], color='#e0e0e0', lw=1.5, label='Price')
             ax.plot(df_m.index, df_m['EMA22'], color='#ffae00', lw=1.5, label='EMA 22')
@@ -638,7 +675,6 @@ def main():
             st.pyplot(fig)
             plt.close(fig)
             
-            # Indicators
             fig2, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 4), sharex=True)
             hist = df_m['MACD_Hist'].tail(60)
             cols = ['#4caf50' if h>0 else '#f44336' for h in hist]
@@ -655,11 +691,9 @@ def main():
         else: st.warning("數據不足，無法繪圖")
 
     with tab2:
-        # [NEW] 6-Factor Visualization
         if ff_analysis:
             st.markdown("### 🧬 Fama-French 6-Factor DNA")
             st.caption("基於 FF (2018) 'Choosing factors' 論文模型，解析股票的風險屬性。")
-            
             f_cols = st.columns(6)
             factors_map = [
                 ('Mkt', 'Beta_Mkt', '市場 Beta'),
@@ -674,7 +708,7 @@ def main():
                 val = ff_analysis[key]['val']
                 sig = ff_analysis[key]['sig']
                 color = "#4caf50" if val > 0 else "#f44336"
-                opacity = "1.0" if sig else "0.3" # 顯著才亮
+                opacity = "1.0" if sig else "0.3" 
                 
                 with f_cols[i]:
                     st.markdown(f"""
@@ -685,7 +719,6 @@ def main():
                     </div>
                     """, unsafe_allow_html=True)
             
-            # Interpretation Guide
             with st.expander("📚 如何解讀這些因子？"):
                 st.markdown("""
                 * **SMB (規模)**: 正值代表小型股特徵，負值代表大型股。
@@ -693,7 +726,6 @@ def main():
                 * **RMW (獲利)**: 正值代表高獲利品質（Robust），負值代表獲利疲弱（Weak）。
                 * **CMA (投資)**: 正值代表保守投資（資產擴張慢），負值代表積極擴張（Aggressive）。
                 * **MOM (動能)**: 正值代表順勢動能股，負值代表逆勢或動能反轉。
-                * *透明度較低的卡片代表統計上不顯著。*
                 """)
             st.divider()
 
