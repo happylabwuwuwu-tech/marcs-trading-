@@ -1,3 +1,35 @@
+import sys
+import os
+
+# =============================================================================
+# 0. 系統補丁 (Fix for Python 3.12+ & pandas_datareader)
+# =============================================================================
+# 必須放在所有 import 之前，解決 distutils 被移除的問題
+try:
+    import distutils.version
+except ImportError:
+    import types
+    # 定義一個假的 distutils 模組
+    if 'distutils' not in sys.modules:
+        sys.modules['distutils'] = types.ModuleType('distutils')
+    if 'distutils.version' not in sys.modules:
+        sys.modules['distutils.version'] = types.ModuleType('distutils.version')
+    
+    # 使用 packaging.version 來替代 LooseVersion
+    try:
+        from packaging.version import Version as LooseVersion
+    except ImportError:
+        # 如果沒有 packaging，使用簡單的替代類別
+        class LooseVersion:
+            def __init__(self, vstring): self.vstring = vstring
+            def __ge__(self, other): return str(self.vstring) >= str(other.vstring)
+            def __lt__(self, other): return str(self.vstring) < str(other.vstring)
+
+    sys.modules['distutils.version'].LooseVersion = LooseVersion
+
+# =============================================================================
+# 正常 Import
+# =============================================================================
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -16,7 +48,7 @@ import pandas_datareader.data as web
 warnings.filterwarnings('ignore')
 
 # =============================================================================
-# 0. 視覺核心 (星際戰神風格 + SMC 戰術面板)
+# 1. 視覺核心 (星際戰神風格 + SMC 戰術面板)
 # =============================================================================
 st.set_page_config(page_title="MARCS V97 6-Factor Elite", layout="wide", page_icon="🛡️")
 
@@ -84,7 +116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# 1. 數據獲取層
+# 2. 數據獲取層
 # =============================================================================
 @st.cache_data(ttl=3600)  
 def robust_download(ticker, period="1y"):
@@ -119,7 +151,7 @@ class Global_Market_Loader:
         return []
 
 # =============================================================================
-# 2. SMC 引擎
+# 3. SMC 引擎
 # =============================================================================
 class SMC_Engine:
     @staticmethod
@@ -145,7 +177,7 @@ class SMC_Engine:
         except Exception: return []
 
 # =============================================================================
-# [NEW] 3. 六因子模型引擎 (Fama-French 5 + Momentum)
+# 4. 六因子模型引擎 (Fama-French 5 + Momentum)
 # =============================================================================
 class SixFactor_Engine:
     @staticmethod
@@ -188,7 +220,6 @@ class SixFactor_Engine:
             if len(combined) < 30: return None
             
             # 計算超額報酬 (Stock Return - Risk Free Rate)
-            # 這裡簡單假設 Rf 從因子數據中獲取
             y = combined['Close'] - combined['RF']
             X = combined[['Mkt_RF', 'SMB', 'HML', 'RMW', 'CMA', 'MOM']]
             X = sm.add_constant(X)
@@ -216,7 +247,7 @@ class SixFactor_Engine:
             return None
 
 # =============================================================================
-# 4. 核心分析引擎
+# 5. 核心分析引擎
 # =============================================================================
 class Micro_Engine_Pro:
     @staticmethod
@@ -293,7 +324,7 @@ class Scanner_Engine_Elder:
         except: return None
 
 # =============================================================================
-# 5. 輔助引擎
+# 6. 輔助引擎
 # =============================================================================
 class FinMind_Engine:
     @staticmethod
