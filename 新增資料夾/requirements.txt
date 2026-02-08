@@ -6,4 +6,5 @@ matplotlib
 requests
 statsmodels
 pandas-datareader
+finmind
 packaging
