@@ -8,3 +8,4 @@ statsmodels
 pandas-datareader
 finmind
 packaging
+tqdm
