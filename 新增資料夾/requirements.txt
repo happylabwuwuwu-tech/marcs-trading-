@@ -4,3 +4,5 @@ numpy
 yfinance
 matplotlib
 requests
+statsmodels
+pandas-datareader
