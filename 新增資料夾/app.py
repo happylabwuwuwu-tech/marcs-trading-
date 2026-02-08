@@ -41,6 +41,7 @@ from datetime import datetime, timedelta
 import statsmodels.api as sm
 import pandas_datareader.data as web
 from FinMind.data import DataLoader
+import plotly.graph_objects as go
 
 # 過濾警告
 warnings.filterwarnings('ignore')
@@ -48,7 +49,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 # 1. 視覺核心 (星際戰神風格 + SMC 戰術面板)
 # =============================================================================
-st.set_page_config(page_title="MARCS V97 6-Factor Elite", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="MARCS V98 Ultimate", layout="wide", page_icon="🛡️")
 
 st.markdown("""
 <style>
@@ -236,8 +237,18 @@ class FinMind_Engine:
         if ".TW" not in ticker and ".TWO" not in ticker: 
             return None
         
+        # ---------------------------------------------------------
+        # 👇 請在這裡貼上您的 Token (如果沒有就留空字串 "")
+        # ---------------------------------------------------------
+        USER_TOKEN = ""  
+        # ---------------------------------------------------------
+
         stock_id = ticker.split('.')[0]
         api = DataLoader()
+        
+        if USER_TOKEN:
+            api.login_by_token(api_token=USER_TOKEN)
+
         start_date = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
         
         data_pack = {
@@ -283,7 +294,6 @@ class PEG_Valuation_Engine:
             if ".TW" in ticker:
                 fm_data = FinMind_Engine.get_tw_data(ticker)
                 stock = yf.Ticker(ticker)
-                # 嘗試抓現價
                 try: price = stock.history(period="1d")['Close'].iloc[-1]
                 except: price = 0
                 
@@ -317,7 +327,7 @@ class PEG_Valuation_Engine:
             pe = info.get('trailingPE', None)
             growth = info.get('earningsGrowth', None) or info.get('revenueGrowth', None)
 
-            # [安全網] 避免 KeyError
+            # [安全網]
             if not pe or not growth: 
                 return {
                     "fair": price, 
@@ -382,7 +392,7 @@ class Micro_Engine_Pro:
             if in_bull_fvg: score += 15; signals.append("Testing Bullish FVG")
             if in_bear_fvg: score -= 15; signals.append("Testing Bearish FVG")
             
-            # 3. Chips (Hybrid: FinMind or YF)
+            # 3. Chips (Hybrid)
             chips = None
             if ".TW" in ticker:
                 fm_data = FinMind_Engine.get_tw_data(ticker)
@@ -419,8 +429,47 @@ class Scanner_Engine_Elder:
         except: return None
 
 # =============================================================================
-# 7. 其他輔助與 UI
+# 7. 其他輔助與 UI (Macro Regime & Radar)
 # =============================================================================
+class Macro_Risk_Engine:
+    @staticmethod
+    @st.cache_data(ttl=3600)
+    def calculate_market_regime():
+        try:
+            tickers = ["^VIX", "^TNX", "^IRX", "DX-Y.NYB"]
+            df = yf.download(tickers, period="5d", progress=False)['Close']
+            
+            # 安全取值
+            def get_val(symbol):
+                return df[symbol].iloc[-1] if symbol in df.columns else 0
+            
+            vix = get_val('^VIX')
+            us10y = get_val('^TNX')
+            dxy = get_val('DX-Y.NYB')
+            
+            regime = "Normal"
+            color = "gray"
+            
+            if vix > 25: 
+                regime = "High Fear (避險模式)"
+                color = "#f44336" 
+            elif dxy > 105 and us10y > 4.5:
+                regime = "Liquidity Tight (資金緊縮)"
+                color = "#ff9800" 
+            elif vix < 15 and us10y < 4.0:
+                regime = "Goldilocks (金髮女孩-看多)"
+                color = "#4caf50" 
+            
+            return {
+                "score": int(max(0, 100 - (vix * 2))),
+                "regime": regime,
+                "color": color,
+                "data": {"VIX": vix, "US10Y": us10y, "DXY": dxy}
+            }
+        except Exception as e:
+            print(f"Macro Error: {e}")
+            return {"score": 50, "regime": "Data Error", "color": "gray", "data": {"VIX": 0, "US10Y": 0, "DXY": 0}}
+
 class News_Intel_Engine:
     @staticmethod
     @st.cache_data(ttl=3600)
@@ -513,19 +562,6 @@ class Backtest_Engine:
             return {"total_return": total_ret, "equity_curve": pd.DataFrame({'Equity': equity[-len(df):]}, index=df.index)}
         except: return None
 
-class Macro_Risk_Engine:
-    @staticmethod
-    @st.cache_data(ttl=3600)
-    def calculate_market_risk():
-        try:
-            vix_df = robust_download("^VIX", "5d")
-            if not vix_df.empty:
-                vix = vix_df['Close'].iloc[-1]
-                score = max(0, 100 - (vix * 2)) 
-                return int(score), ["VIX Monitor"], vix
-            return 50, ["Neutral"], 20
-        except: return 50, ["Loading"], 20
-
 class Message_Generator:
     @staticmethod
     def get_verdict(ticker, hybrid, m_score, chips, fvgs, ff_data):
@@ -559,7 +595,6 @@ def main():
     if "target" not in st.session_state: st.session_state.target = "2330.TW"
     if st.sidebar.button("分析單一標的"): st.session_state.target = target_in
     
-    # Scanner
     st.sidebar.markdown("---")
     with st.sidebar.expander("📡 主動掃描器 (Scanner)"):
         scan_source = st.radio("來源", ["線上掃描", "CSV匯入"])
@@ -599,7 +634,6 @@ def main():
                 except: st.error("CSV 格式錯誤")
 
     if "scan_results" not in st.session_state: st.session_state.scan_results = []
-    
     if st.session_state.scan_results:
         with st.expander("🔭 掃描結果 (Scan Results)"):
             st.dataframe(pd.DataFrame(st.session_state.scan_results), use_container_width=True)
@@ -611,9 +645,20 @@ def main():
 
     target = st.session_state.target
 
-    # 1. Macro Risk
-    risk, risk_d, vix = Macro_Risk_Engine.calculate_market_risk()
-    st.markdown(f"""<div class="risk-container"><div class="risk-val" style="color:#4caf50">{risk}</div><div style="color:#aaa">MARKET RISK (VIX: {vix:.1f})</div></div>""", unsafe_allow_html=True)
+    # 1. Macro Regime Dashboard
+    macro = Macro_Risk_Engine.calculate_market_regime()
+    st.markdown("### 🌍 宏觀戰情室 (Global Macro)")
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.markdown(f"""<div class="metric-card" style="border-left-color:{macro['color']}">
+        <div class="highlight-lbl">MARKET REGIME</div>
+        <div class="highlight-val" style="color:{macro['color']}; font-size:20px">{macro['regime']}</div>
+        <div class="smart-text">Risk Score: {macro['score']}</div></div>""", unsafe_allow_html=True)
+    with m2: st.metric("VIX (恐慌指數)", f"{macro['data']['VIX']:.2f}")
+    with m3: st.metric("US 10Y Yield", f"{macro['data']['US10Y']:.2f}%")
+    with m4: st.metric("DXY (美元指數)", f"{macro['data']['DXY']:.2f}")
+    
+    st.divider()
 
     # 2. Analysis Execution
     with st.spinner(f"Engaging Fama-French 6-Factor Model on {target}..."):
@@ -627,7 +672,8 @@ def main():
             dcf_res = PEG_Valuation_Engine.calculate(target, sent)
             backtest = Backtest_Engine.run_backtest(target)
 
-        hybrid = int((risk * 0.3) + (m_score * 0.7))
+        # Risk Score Integration
+        hybrid = int((macro['score'] * 0.3) + (m_score * 0.7))
         
         sl_p = curr_p - 2.5 * atr if atr > 0 else 0
         tp_p = curr_p + 4.0 * atr if atr > 0 else 0
@@ -653,7 +699,7 @@ def main():
     with c3: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">PEG 情緒修正</div><div class="highlight-val">{sent:+.2f}</div><div class="smart-text">News Adj</div></div>""", unsafe_allow_html=True)
     with c4: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">SMC 訊號</div><div class="highlight-val">{len(fvgs)}</div><div class="smart-text">Active FVG</div></div>""", unsafe_allow_html=True)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 SMC 戰術圖表", "🧬 六因子與估值", "📰 情報中心", "🔄 策略回測"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 SMC 戰術圖表", "🧬 六因子雷達與估值", "📰 情報中心", "🔄 策略回測"])
     
     with tab1:
         if not df_m.empty and 'EMA22' in df_m.columns:
@@ -691,52 +737,74 @@ def main():
         else: st.warning("數據不足，無法繪圖")
 
     with tab2:
-        if ff_analysis:
-            st.markdown("### 🧬 Fama-French 6-Factor DNA")
-            st.caption("基於 FF (2018) 'Choosing factors' 論文模型，解析股票的風險屬性。")
-            f_cols = st.columns(6)
-            factors_map = [
-                ('Mkt', 'Beta_Mkt', '市場 Beta'),
-                ('Size', 'Beta_SMB', '規模 (SMB)'),
-                ('Value', 'Beta_HML', '價值 (HML)'),
-                ('Profit', 'Beta_RMW', '獲利 (RMW)'),
-                ('Invest', 'Beta_CMA', '投資 (CMA)'),
-                ('Momentum', 'Beta_MOM', '動能 (MOM)')
-            ]
-            
-            for i, (label, key, desc) in enumerate(factors_map):
-                val = ff_analysis[key]['val']
-                sig = ff_analysis[key]['sig']
-                color = "#4caf50" if val > 0 else "#f44336"
-                opacity = "1.0" if sig else "0.3" 
+        c_val1, c_val2 = st.columns([1, 1])
+        
+        # [左側] 六因子雷達圖
+        with c_val1:
+            st.markdown("#### 🧬 Factor Exposure DNA (六因子曝險)")
+            if ff_analysis:
+                categories = ['市場 (Mkt)', '規模 (Size)', '價值 (Value)', '獲利 (Profit)', '投資 (Inv)', '動能 (Mom)']
+                values = [
+                    ff_analysis['Beta_Mkt']['val'],
+                    ff_analysis['Beta_SMB']['val'], 
+                    ff_analysis['Beta_HML']['val'], 
+                    ff_analysis['Beta_RMW']['val'], 
+                    ff_analysis['Beta_CMA']['val'], 
+                    ff_analysis['Beta_MOM']['val']  
+                ]
                 
-                with f_cols[i]:
-                    st.markdown(f"""
-                    <div style="text-align:center; opacity:{opacity}; border:1px solid #444; border-radius:5px; padding:5px; background:#111;">
-                        <div style="font-size:12px; color:#888;">{label}</div>
-                        <div style="font-size:18px; font-weight:bold; color:{color}; font-family:'JetBrains Mono'">{val:+.2f}</div>
-                        <div style="font-size:10px; color:#aaa;">{desc}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            with st.expander("📚 如何解讀這些因子？"):
-                st.markdown("""
-                * **SMB (規模)**: 正值代表小型股特徵，負值代表大型股。
-                * **HML (價值)**: 正值代表價值股（低 P/B），負值代表成長股。
-                * **RMW (獲利)**: 正值代表高獲利品質（Robust），負值代表獲利疲弱（Weak）。
-                * **CMA (投資)**: 正值代表保守投資（資產擴張慢），負值代表積極擴張（Aggressive）。
-                * **MOM (動能)**: 正值代表順勢動能股，負值代表逆勢或動能反轉。
-                """)
-            st.divider()
+                fig_radar = go.Figure()
+                fig_radar.add_trace(go.Scatterpolar(
+                    r=values,
+                    theta=categories,
+                    fill='toself',
+                    name=target,
+                    line_color='#ffae00'
+                ))
+                fig_radar.update_layout(
+                    polar=dict(radialaxis=dict(visible=True, range=[-1, 2])),
+                    showlegend=False,
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    font=dict(color='white'),
+                    margin=dict(l=40, r=40, t=40, b=40)
+                )
+                st.plotly_chart(fig_radar, use_container_width=True)
+            else:
+                st.info("無法取得六因子數據，請稍後再試。")
 
-        if dcf_res:
-            c_v1, c_v2 = st.columns(2)
-            with c_v1: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">PEG 合理價</div><div class="highlight-val">${dcf_res['fair']:.2f}</div><div class="smart-text">Method: {dcf_res['method']}</div></div>""", unsafe_allow_html=True)
-            with c_v2: 
-                st.write("#### 估值情境 (Scenarios)")
-                st.json(dcf_res['scenarios'])
-                st.caption(f"PEG Used: {dcf_res['peg_used']} | Sentiment Impact: {dcf_res['sentiment_impact']}")
-        else: st.info("無法計算 PEG (可能缺乏盈利數據)")
+        # [右側] 估值儀表板
+        with c_val2:
+            st.markdown("#### ⚖️ Fair Value Gauge (估值水位)")
+            if dcf_res:
+                fair_price = dcf_res['fair']
+                
+                diff_pct = (curr_p - fair_price) / fair_price
+                state = "合理 (Fair)"
+                color = "white"
+                if diff_pct < -0.2: 
+                    state = "低估 (Undervalued)"
+                    color = "#4caf50"
+                elif diff_pct > 0.2: 
+                    state = "高估 (Overvalued)"
+                    color = "#f44336"
+                
+                st.markdown(f"""
+                <div style="text-align:center; padding:20px; border:1px solid #444; border-radius:10px;">
+                    <div style="font-size:14px; color:#aaa;">當前股價 vs 合理價</div>
+                    <div style="font-size:36px; font-weight:bold; color:{color};">${curr_p:.2f}</div>
+                    <div style="font-size:14px; color:#888;">合理目標: ${fair_price:.2f}</div>
+                    <div style="margin-top:10px; padding:5px; background:{color}20; color:{color}; border-radius:5px;">
+                        {state} ({diff_pct*100:+.1f}%)
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.write("")
+                st.markdown("**估值模型詳情 (PEG):**")
+                st.json(dcf_res)
+            else:
+                st.warning("缺乏財報數據，無法估值")
 
     with tab3:
         if news:
