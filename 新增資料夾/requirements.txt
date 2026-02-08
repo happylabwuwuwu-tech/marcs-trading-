@@ -6,3 +6,4 @@ matplotlib
 requests
 statsmodels
 pandas-datareader
+packaging
