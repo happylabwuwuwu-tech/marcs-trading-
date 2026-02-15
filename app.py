@@ -18,27 +18,37 @@ st.set_page_config(
 )
 
 # =============================================================================
-# 0. 核心工具函數 (智能格式化) [NEW]
+# 0. 核心工具函數 (智能格式化 - 精度修復核心)
 # =============================================================================
-def smart_format(value, is_currency=True):
+def smart_format(value, is_currency=True, is_percent=False, include_sign=False):
     """
-    智能精度適配：解決小幣種顯示為 0.00 的問題
+    全能格式化引擎：自動適配比特幣 ($90,000) 到 佩佩幣 ($0.000004)
     """
     if value is None or pd.isna(value) or value == 0:
         return "$0.00" if is_currency else "0.00"
-        
+    
     val = float(value)
+    
+    if is_percent:
+        return f"{val*100:.2f}%"
+
     abs_val = abs(val)
     prefix = "$" if is_currency else ""
     
-    if abs_val < 0.000001:  # 極小數值 (如 SHIB)
-        return f"{prefix}{val:.8f}".rstrip('0')
-    elif abs_val < 0.01:    # 微小數值
-        return f"{prefix}{val:.6f}"
-    elif abs_val < 1:       # 小數值
-        return f"{prefix}{val:.4f}"
-    else:                   # 正常數值
-        return f"{prefix}{val:,.2f}"
+    # 處理正負號顯示 (例如情緒指標)
+    sign = ""
+    if include_sign and val > 0: sign = "+"
+    elif val < 0: sign = "-"
+    
+    # 針對像 PEPE/SHIB 這種極小數
+    if abs_val < 0.000001:  
+        return f"{sign}{prefix}{abs_val:.9f}".rstrip('0') # 顯示到 9 位並去除尾數 0
+    elif abs_val < 0.001:    
+        return f"{sign}{prefix}{abs_val:.7f}".rstrip('0')
+    elif abs_val < 1:       
+        return f"{sign}{prefix}{abs_val:.5f}"
+    else:                   
+        return f"{sign}{prefix}{abs_val:,.2f}"
 
 # =============================================================================
 # 1. CSS 視覺魔法
@@ -83,9 +93,9 @@ st.markdown("""
         box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
         margin-bottom: 20px;
     }
-    .metric-label { color: #8b949e; font-size: 14px; letter-spacing: 1px; font-family: 'Roboto Mono'; }
-    .metric-value { color: #ffffff; font-size: 24px; font-weight: 700; text-shadow: 0 0 10px rgba(255, 255, 255, 0.3); }
-    .metric-sub { font-size: 12px; margin-top: 8px; font-family: 'Roboto Mono'; }
+    .metric-label { color: #8b949e; font-size: 14px; letter-spacing: 1px; font-family: 'Roboto Mono'; text-transform: uppercase; }
+    .metric-value { color: #ffffff; font-size: 24px; font-weight: 700; text-shadow: 0 0 10px rgba(255, 255, 255, 0.3); margin: 5px 0; }
+    .metric-sub { font-size: 12px; margin-top: 8px; font-family: 'Roboto Mono'; color: #8b949e; }
     
     [data-testid="stSidebar"] { background-color: rgba(13, 17, 23, 0.9); border-right: 1px solid rgba(48, 54, 61, 0.5); }
     div.stButton > button { background: linear-gradient(90deg, #1f6feb 0%, #00f2ff 100%); color: black; font-weight: bold; border: none; }
@@ -289,7 +299,7 @@ class MARCS_Backtester:
         return pd.DataFrame(equity), pd.DataFrame(trades)
 
 # =============================================================================
-# 3. 主程序
+# 3. 主程序 (Main Interface)
 # =============================================================================
 def main():
     st.sidebar.markdown("## ⚙️ SYSTEM CORE")
@@ -315,7 +325,7 @@ def main():
                     col = cols[idx % 4]
                     color = "#f85149" if res['trend'] == 'Overbought' else ("#3fb950" if res['trend'] == 'Oversold' else "#8b949e")
                     with col:
-                        # 這裡使用 smart_format
+                        # [SMART FORMAT]
                         st.markdown(f"""
                         <div class="metric-card" style="border-top: 2px solid {color}">
                             <div class="metric-label">{res['name']}</div>
@@ -332,13 +342,14 @@ def main():
                     last_row = bt.df.iloc[-1]
                     score, signals = Micro_Structure_Engine.get_signals(last_row)
                     
-                    # 計算動態止損與 ATR
+                    # 計算動態止損與 ATR (針對目前價格)
                     curr_price = last_row['Close']
                     atr_val = last_row['ATR']
                     sl_val = curr_price - (2.5 * atr_val)
                     tp_val = curr_price + (2.5 * atr_val * 2) # 假設 1:2
+                    fair_value = last_row['EMA20'] # 模擬 Fair Value 為 EMA20
                     
-                    # 第一排：核心信號
+                    # [UI Block 1] 核心信號 (Core Signals)
                     c1, c2, c3, c4 = st.columns(4)
                     with c1: st.metric("MICRO SCORE", f"{score}", delta="Bullish" if score>60 else "Bearish")
                     with c2: st.metric("ADX STRENGTH", f"{last_row['ADX']:.1f}", delta="Trending" if last_row['ADX']>20 else "Choppy")
@@ -355,61 +366,99 @@ def main():
                         if mc_res is not None: mc_dd = mc_res['max_dd'].quantile(0.95) * 100
                     with c4: st.metric("VAR (95%)", f"-{mc_dd:.1f}%", "Monte Carlo Est.")
 
-                    # 第二排：價格與風控 (修復顯示問題)
-                    st.markdown("#### 🛡️ RISK PARAMETERS")
+                    # [UI Block 2] 高精度價格儀表板 (Precision Board)
+                    st.markdown("#### 🛡️ RISK & VALUATION MATRIX")
+                    
+                    # 這一區使用 HTML Card 來確保 smart_format 的渲染效果
                     r1, r2, r3, r4 = st.columns(4)
-                    with r1: 
-                        st.markdown(f"""<div class="metric-card"><div class="metric-label">CURRENT PRICE</div>
-                        <div class="metric-value">{smart_format(curr_price)}</div></div>""", unsafe_allow_html=True)
+                    
+                    # ATR Card
+                    with r1:
+                        st.markdown(f"""<div class="metric-card"><div class="metric-label">ATR (Volatility)</div>
+                        <div class="metric-value">{smart_format(atr_val, is_currency=False)}</div>
+                        <div class="metric-sub">Risk Unit</div></div>""", unsafe_allow_html=True)
+                        
+                    # Stop Loss Card
                     with r2:
-                        st.markdown(f"""<div class="metric-card"><div class="metric-label">ATR (VOLATILITY)</div>
-                        <div class="metric-value">{smart_format(atr_val, is_currency=False)}</div></div>""", unsafe_allow_html=True)
+                        st.markdown(f"""<div class="metric-card" style="border-bottom: 2px solid #f85149">
+                        <div class="metric-label">STOP LOSS</div>
+                        <div class="metric-value" style="color:#f85149">{smart_format(sl_val)}</div>
+                        <div class="metric-sub">-2.5 ATR</div></div>""", unsafe_allow_html=True)
+                        
+                    # Take Profit Card
                     with r3:
-                        st.markdown(f"""<div class="metric-card" style="border-bottom: 2px solid #f85149"><div class="metric-label">STOP LOSS</div>
-                        <div class="metric-value" style="color:#f85149">{smart_format(sl_val)}</div></div>""", unsafe_allow_html=True)
+                        st.markdown(f"""<div class="metric-card" style="border-bottom: 2px solid #3fb950">
+                        <div class="metric-label">TAKE PROFIT</div>
+                        <div class="metric-value" style="color:#3fb950">{smart_format(tp_val)}</div>
+                        <div class="metric-sub">+5.0 ATR</div></div>""", unsafe_allow_html=True)
+                        
+                    # Fair Value Gauge (模擬截圖效果)
                     with r4:
-                        st.markdown(f"""<div class="metric-card" style="border-bottom: 2px solid #3fb950"><div class="metric-label">TAKE PROFIT</div>
-                        <div class="metric-value" style="color:#3fb950">{smart_format(tp_val)}</div></div>""", unsafe_allow_html=True)
+                        fair_gap = (curr_price - fair_value) / fair_value
+                        gap_label = "Fair"
+                        if fair_gap > 0.05: gap_label = "Overvalued"
+                        elif fair_gap < -0.05: gap_label = "Undervalued"
+                        
+                        st.markdown(f"""<div class="metric-card">
+                        <div class="metric-label">Fair Value Gauge</div>
+                        <div class="metric-value">{smart_format(fair_value)}</div>
+                        <div class="metric-sub" style="color: {'#f85149' if fair_gap > 0 else '#3fb950'}">
+                            {gap_label} ({fair_gap*100:+.1f}%)
+                        </div></div>""", unsafe_allow_html=True)
 
-                    # Visuals
+                    # [UI Block 3] 視覺化圖表
                     tab1, tab2 = st.tabs(["CHART", "EQUITY"])
                     with tab1:
                         fig1, ax1 = plt.subplots(figsize=(12, 5))
                         p_df = bt.df.tail(150)
-                        ax1.plot(p_df.index, p_df['Close'], color='#e6edf3', lw=1.5)
-                        ax1.plot(p_df.index, p_df['K_Upper'], color='#00f2ff', ls='--', alpha=0.5)
-                        ax1.plot(p_df.index, p_df['K_Lower'], color='#00f2ff', ls='--', alpha=0.5)
+                        
+                        # 主價格線
+                        ax1.plot(p_df.index, p_df['Close'], color='#e6edf3', lw=1.5, label='Price')
+                        ax1.plot(p_df.index, p_df['K_Upper'], color='#00f2ff', ls='--', alpha=0.3)
+                        ax1.plot(p_df.index, p_df['K_Lower'], color='#00f2ff', ls='--', alpha=0.3)
                         ax1.fill_between(p_df.index, p_df['K_Upper'], p_df['K_Lower'], color='#00f2ff', alpha=0.05)
                         
-                        # [FIX] Y軸動態精度設定
-                        if curr_price < 1:
+                        # [FIX] 繪製高精度 SL/TP 線
+                        ax1.axhline(y=sl_val, color='#f85149', linestyle='--', alpha=0.8, lw=1,
+                                    label=f'SL: {smart_format(sl_val, is_currency=False)}')
+                        ax1.axhline(y=tp_val, color='#3fb950', linestyle='--', alpha=0.8, lw=1,
+                                    label=f'TP: {smart_format(tp_val, is_currency=False)}')
+
+                        # [FIX] Y軸動態精度設定 (移除 1e-5)
+                        if curr_price < 0.0001:
+                             ax1.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.8f'))
+                        elif curr_price < 1:
                             ax1.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.6f'))
                         else:
                             ax1.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2f'))
                             
+                        # 買賣點標記
                         if not df_trades.empty:
                             bs = df_trades[(df_trades['Type']=='BUY') & (df_trades['Date']>=p_df.index[0])]
                             ss = df_trades[(df_trades['Type']=='SELL') & (df_trades['Date']>=p_df.index[0])]
                             ax1.scatter(bs['Date'], bs['Price'], marker='^', color='#3fb950', s=100, zorder=5)
                             ax1.scatter(ss['Date'], ss['Price'], marker='v', color='#f85149', s=100, zorder=5)
                         
+                        # 圖表樣式美化
                         ax1.set_facecolor('#0d1117'); fig1.patch.set_facecolor('#0d1117')
-                        ax1.tick_params(colors='#8b949e'); ax1.grid(True, color='#30363d', alpha=0.3)
+                        ax1.tick_params(colors='#8b949e')
+                        ax1.grid(True, color='#30363d', alpha=0.3)
+                        ax1.legend(facecolor='#0d1117', labelcolor='#8b949e', loc='upper left')
                         st.pyplot(fig1)
 
                     with tab2:
                         fig2, ax2 = plt.subplots(figsize=(12, 4))
                         if not df_equity.empty:
                             ax2.plot(pd.to_datetime(df_equity['Date']), df_equity['Equity'], color='#238636', lw=2)
+                        ax2.set_title("Equity Curve", color='white')
                         ax2.set_facecolor('#0d1117'); fig2.patch.set_facecolor('#0d1117')
                         ax2.tick_params(colors='#8b949e'); ax2.grid(True, color='#30363d', alpha=0.3)
                         st.pyplot(fig2)
                 else:
-                    st.error("Data Unavailable")
+                    st.error("Data Unavailable: Please check the ticker symbol.")
 
     elif mode == "SIMULATION LAB":
         st.markdown("<h1 style='text-align: center; color: #f85149;'>🧪 STRESS TEST LAB</h1>", unsafe_allow_html=True)
-        # (保留之前的實驗室代碼，這裡簡化顯示以節省空間，功能完全相同)
         with st.expander("⚙️ LAB PARAMETERS", expanded=True):
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -442,12 +491,14 @@ def main():
                 with c_chart1:
                     fig_lab1, ax_lab1 = plt.subplots(figsize=(6, 4))
                     for curve in res['curves']: ax_lab1.plot(curve, color='#00f2ff', alpha=0.1, lw=1)
+                    ax_lab1.set_title("Equity Paths (First 50)", color='white')
                     ax_lab1.set_facecolor('#0d1117'); fig_lab1.patch.set_facecolor('#0d1117')
                     ax_lab1.tick_params(colors='#8b949e'); ax_lab1.grid(True, color='#30363d', alpha=0.3)
                     st.pyplot(fig_lab1)
                 with c_chart2:
                     fig_lab2, ax_lab2 = plt.subplots(figsize=(6, 4))
                     ax_lab2.hist(max_dds * 100, bins=40, color='#f85149', alpha=0.7)
+                    ax_lab2.set_title("Drawdown Distribution", color='white')
                     ax_lab2.set_facecolor('#0d1117'); fig_lab2.patch.set_facecolor('#0d1117')
                     ax_lab2.tick_params(colors='#8b949e'); ax_lab2.grid(True, color='#30363d', alpha=0.3)
                     st.pyplot(fig_lab2)
