@@ -11,7 +11,7 @@ warnings.filterwarnings('ignore')
 
 # 設定網頁配置
 st.set_page_config(
-    page_title="MARCS V57 GAMMA",
+    page_title="MARCS V80 OMEGA",
     layout="wide",
     page_icon="🌌",
     initial_sidebar_state="expanded"
@@ -122,6 +122,44 @@ class Global_Index_List:
             "JPY=X": {"name": "JPY 日圓", "type": "Currency"}
         }
 
+class Macro_Regime_Engine:
+    @staticmethod
+    def get_market_regime():
+        """
+        分析 VIX (恐慌) 和 DXY (美元流動性) 來決定市場狀態
+        回傳: risk_factor (0.0 安全 ~ 1.0 危險)
+        """
+        try:
+            tickers = ["^VIX", "DX-Y.NYB"]
+            df = yf.download(tickers, period="1mo", progress=False, auto_adjust=True)
+            if df.empty: return 0.5, "Data Missing"
+            
+            if isinstance(df.columns, pd.MultiIndex): 
+                vix = df['Close']['^VIX'].iloc[-1]
+                dxy = df['Close']['DX-Y.NYB'].iloc[-1]
+            else:
+                return 0.5, "Format Error"
+
+            risk_score = 0
+            # 1. VIX 邏輯
+            if vix < 15: risk_score += 0
+            elif vix < 20: risk_score += 0.2
+            elif vix < 30: risk_score += 0.5
+            else: risk_score += 1.0
+
+            # 2. DXY 邏輯
+            if dxy > 105: risk_score += 0.3
+            
+            final_risk = min(risk_score, 1.0)
+            
+            if final_risk >= 0.8: regime_desc = "CRASH MODE (High Risk)"
+            elif final_risk >= 0.5: regime_desc = "CAUTION (Volatile)"
+            else: regime_desc = "RISK ON (Safe)"
+            
+            return final_risk, regime_desc
+        except Exception as e:
+            return 0.5, f"Error: {str(e)}"
+
 class Macro_Engine:
     @staticmethod
     def analyze(ticker, name):
@@ -150,6 +188,50 @@ class Macro_Engine:
             return {"ticker": ticker, "name": name, "price": c.iloc[-1], "rsi": rsi, "chaos": chaos, "trend": trend}
         except: return None
 
+class Factor_DNA_Engine:
+    @staticmethod
+    def analyze_factors(df):
+        """
+        計算技術面六因子分數 (0-100)
+        """
+        if df.empty or len(df) < 60: return None
+        last = df.iloc[-1]
+        c = df['Close']
+        v = df['Volume'] if 'Volume' in df.columns else pd.Series(np.ones(len(df)))
+        scores = {}
+        
+        # 1. Momentum
+        rsi = last['rsi'] if 'rsi' in last else 50 # 假設已計算
+        scores['Momentum'] = min(max(rsi, 0), 100)
+        
+        # 2. Trend
+        trend_raw = 50
+        if c.iloc[-1] > last['EMA20']: trend_raw += 30
+        if 'ADX' in last and last['ADX'] > 25: trend_raw += 20
+        scores['Trend'] = min(trend_raw, 100)
+        
+        # 3. Volatility (低波動加分)
+        atr_pct = (last['ATR'] / last['Close']) * 100
+        vol_score = 100 - (atr_pct * 10)
+        scores['Volatility'] = min(max(vol_score, 0), 100)
+        
+        # 4. Volume
+        vol_ma = v.rolling(20).mean().iloc[-1]
+        vol_score = 80 if v.iloc[-1] > vol_ma else 50
+        scores['Volume'] = vol_score
+        
+        # 5. Strength (ROC)
+        roc = ((c.iloc[-1] - c.iloc[-20]) / c.iloc[-20]) * 100
+        scores['Strength'] = min(max(50 + roc * 2, 0), 100)
+        
+        # 6. Consistency
+        returns = c.pct_change().tail(20)
+        pos_days = returns[returns > 0].count()
+        scores['Consistency'] = (pos_days / 20) * 100
+        
+        avg_score = sum(scores.values()) / 6
+        return scores, avg_score
+
 class Micro_Structure_Engine:
     @staticmethod
     def attach_indicators(df):
@@ -170,6 +252,14 @@ class Micro_Structure_Engine:
         minus_di = 100 * (minus_dm.rolling(14).mean() / tr_smooth)
         dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9)
         df['ADX'] = dx.rolling(14).mean().fillna(0)
+        
+        # 為了 Factor Engine，這裡計算 RSI
+        delta = c.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
+        
         return df
 
     @staticmethod
@@ -180,32 +270,72 @@ class Micro_Structure_Engine:
         is_trending = df_row['ADX'] > 20
         
         if is_trending:
-            if c > df_row['K_Upper']: 
-                score += 15; signals.append("Keltner Breakout")
-            elif c < df_row['K_Lower']: 
-                score -= 15; signals.append("Keltner Breakdown")
+            if c > df_row['K_Upper']: score += 15; signals.append("Keltner Breakout")
+            elif c < df_row['K_Lower']: score -= 15; signals.append("Keltner Breakdown")
             if c > df_row['EMA20']: score += 10
         else:
             signals.append("Low Trend")
         return score, signals
 
+class Multi_Timeframe_Engine:
+    @staticmethod
+    def fetch_and_process_weekly(ticker):
+        try:
+            df_wk = yf.download(ticker, period="2y", interval="1wk", progress=False, auto_adjust=True)
+            if df_wk.empty: return None
+            if isinstance(df_wk.columns, pd.MultiIndex): df_wk.columns = df_wk.columns.get_level_values(0)
+            
+            c = df_wk['Close']
+            df_wk['W_EMA20'] = c.ewm(span=20).mean()
+            
+            h, l = df_wk['High'], df_wk['Low']
+            tr = pd.concat([h-l, (h-c.shift()).abs(), (l-c.shift()).abs()], axis=1).max(axis=1)
+            plus_dm = (h - h.shift()).clip(lower=0)
+            minus_dm = (l.shift() - l).clip(lower=0)
+            tr_smooth = tr.rolling(14).mean()
+            plus_di = 100 * (plus_dm.rolling(14).mean() / tr_smooth)
+            minus_di = 100 * (minus_dm.rolling(14).mean() / tr_smooth)
+            dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9)
+            df_wk['W_ADX'] = dx.rolling(14).mean().fillna(0)
+            
+            last = df_wk.iloc[-1]
+            trend = "BULL" if last['Close'] > last['W_EMA20'] else "BEAR"
+            strength = "STRONG" if last['W_ADX'] > 20 else "WEAK"
+            
+            return {"df": df_wk, "trend": trend, "strength": strength, "ema": last['W_EMA20'], "adx": last['W_ADX']}
+        except: return None
+
+    @staticmethod
+    def merge_mtf_data(daily_df, weekly_df):
+        weekly_resampled = weekly_df[['W_EMA20', 'W_ADX']].resample('D').ffill()
+        merged = daily_df.join(weekly_resampled, how='left')
+        merged[['W_EMA20', 'W_ADX']] = merged[['W_EMA20', 'W_ADX']].ffill()
+        return merged
+
 class Antifragile_Position_Sizing:
     @staticmethod
-    def calculate_size(account_balance, current_price, stop_loss_price, chaos_level, vol_cap=0.5):
+    def calculate_size(account_balance, current_price, stop_loss_price, chaos_level, macro_penalty=0.0):
         risk_per_trade = account_balance * 0.02 
         risk_per_share = current_price - stop_loss_price
         if risk_per_share <= 0: return 0, {}
         
         base_size = risk_per_trade / risk_per_share
+        
+        # Taleb Multiplier (微觀混亂)
         taleb_multiplier = 1.0
         if chaos_level > 1.2: taleb_multiplier = 1 / (1 + np.exp(chaos_level - 1.0))
-            
-        final_size = int(base_size * taleb_multiplier)
+        
+        # Macro Penalty (宏觀懲罰 - VIX)
+        # 如果宏觀風險很高，倉位乘數會變小 (例如 risk=0.8, multiplier=0.2)
+        macro_multiplier = 1.0 - macro_penalty
+        
+        final_size = int(base_size * taleb_multiplier * macro_multiplier)
         suggested_capital = final_size * current_price
         
         return final_size, {
             "risk_money": risk_per_trade,
-            "final_capital": suggested_capital
+            "final_capital": suggested_capital,
+            "macro_mult": macro_multiplier
         }
 
 class Risk_Entropy_Engine:
@@ -252,9 +382,11 @@ class Risk_Entropy_Engine:
         }
 
 class MARCS_Backtester:
-    def __init__(self, ticker, initial_capital):
+    def __init__(self, ticker, initial_capital, use_mtf=False, macro_risk=0.0):
         self.ticker = ticker; self.initial_capital = initial_capital
         self.df = pd.DataFrame()
+        self.use_mtf = use_mtf
+        self.macro_risk = macro_risk
 
     def fetch_data(self):
         try:
@@ -266,9 +398,19 @@ class MARCS_Backtester:
 
     def run(self):
         self.df = Micro_Structure_Engine.attach_indicators(self.df)
+        
+        # MTF Merge
+        if self.use_mtf:
+            mtf_data = Multi_Timeframe_Engine.fetch_and_process_weekly(self.ticker)
+            if mtf_data:
+                self.df = Multi_Timeframe_Engine.merge_mtf_data(self.df, mtf_data['df'])
+            else:
+                self.df['W_EMA20'] = 0; self.df['W_ADX'] = 0
+
         cash = self.initial_capital; position = 0; stop_loss = 0
         trades = []; equity = []
         entry_price = 0
+        filtered_count = 0
 
         for i in range(60, len(self.df)):
             curr_date = self.df.index[i]
@@ -276,6 +418,7 @@ class MARCS_Backtester:
             curr_price = row['Close']
             micro_score, signals = Micro_Structure_Engine.get_signals(row)
             
+            # Sell Logic
             if position > 0:
                 if curr_price < stop_loss:
                     cash += position * curr_price
@@ -286,36 +429,65 @@ class MARCS_Backtester:
                     new_sl = curr_price - 2.5 * row['ATR']
                     if new_sl > stop_loss: stop_loss = new_sl
             
-            if position == 0 and micro_score >= 65 and "Low Trend" not in str(signals):
-                sl_price = curr_price - 2.5 * row['ATR']
-                size, _ = Antifragile_Position_Sizing.calculate_size(cash, curr_price, sl_price, 0.5)
-                cost = size * curr_price
-                if size > 0 and cost <= cash:
-                    cash -= cost; position = size; stop_loss = sl_price
-                    entry_price = curr_price
-                    trades.append({'Date': curr_date, 'Type': 'BUY', 'Price': curr_price})
+            # Buy Logic
+            if position == 0:
+                base_signal = micro_score >= 65 and "Low Trend" not in str(signals)
+                mtf_approved = True
+                
+                if self.use_mtf and 'W_EMA20' in row and row['W_EMA20'] > 0:
+                    if curr_price < row['W_EMA20']: mtf_approved = False
+                
+                if base_signal:
+                    if mtf_approved:
+                        sl_price = curr_price - 2.5 * row['ATR']
+                        # 這裡將 macro_risk 傳入，動態調整倉位
+                        size, _ = Antifragile_Position_Sizing.calculate_size(cash, curr_price, sl_price, 0.5, self.macro_risk)
+                        cost = size * curr_price
+                        if size > 0 and cost <= cash:
+                            cash -= cost; position = size; stop_loss = sl_price
+                            entry_price = curr_price
+                            trades.append({'Date': curr_date, 'Type': 'BUY', 'Price': curr_price})
+                    else:
+                        filtered_count += 1
 
             equity.append({'Date': curr_date, 'Equity': cash + (position * curr_price)})
-        return pd.DataFrame(equity), pd.DataFrame(trades)
+        return pd.DataFrame(equity), pd.DataFrame(trades), filtered_count
 
 # =============================================================================
-# 3. 主程序 (Main Interface)
+# 3. 主程序
 # =============================================================================
 def main():
     st.sidebar.markdown("## ⚙️ SYSTEM CORE")
     mode = st.sidebar.radio("MODE SELECT", ["LIVE MARKET MONITOR", "SIMULATION LAB"], index=0)
+    
     st.sidebar.markdown("---")
+    use_mtf = st.sidebar.toggle("启用 MTF 週線過濾", value=True)
+    if use_mtf: st.sidebar.caption("✅ 僅在週線趨勢向上時交易")
+    else: st.sidebar.caption("⚠️ 忽略大級別趨勢 (高風險)")
     
     if mode == "LIVE MARKET MONITOR":
         ticker_input = st.sidebar.text_input("TARGET", value="BTC-USD")
         capital = st.sidebar.number_input("CAPITAL", value=1000000, step=100000)
-        st.sidebar.info("GAMMA KERNEL: ACTIVE\nPRECISION: ADAPTIVE")
         
-        st.markdown("<h1 style='text-align: center; color: #00f2ff;'>🛡️ MARCS V57 GAMMA</h1>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align: center; color: #8b949e;'>QUANTUM MACRO INTELLIGENCE SYSTEM</p>", unsafe_allow_html=True)
+        st.markdown("<h1 style='text-align: center; color: #00f2ff;'>🛡️ MARCS V80 OMEGA</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: #8b949e;'>ULTIMATE MACRO-QUANT INTELLIGENCE</p>", unsafe_allow_html=True)
         
         if st.sidebar.button("🚀 INITIATE SCAN", type="primary"):
-            # 1. Macro Dashboard
+            # 1. Macro Analysis
+            risk_factor, regime_desc = Macro_Regime_Engine.get_market_regime()
+            regime_color = "#3fb950" if risk_factor < 0.5 else ("#e6a23c" if risk_factor < 0.8 else "#f85149")
+
+            st.markdown("### 🌍 MACRO REGIME SHIELD")
+            m1, m2 = st.columns([1, 3])
+            with m1:
+                st.markdown(f"""<div class="metric-card" style="border: 2px solid {regime_color}">
+                <div class="metric-label">MARKET STATUS</div>
+                <div class="metric-value" style="color:{regime_color}">{regime_desc}</div>
+                <div class="metric-sub">Risk Penalty: {risk_factor*100:.0f}%</div></div>""", unsafe_allow_html=True)
+            with m2:
+                if risk_factor > 0.5: st.warning(f"⚠️ 宏觀風險高 (VIX/DXY)。系統自動縮減倉位 {risk_factor*100:.0f}%。")
+                else: st.success("✅ 宏觀環境安全。系統全速運作。")
+
             st.markdown("### 📡 MACRO METRICS")
             macro_indices = Global_Index_List.get_macro_indices()
             cols = st.columns(4)
@@ -325,80 +497,86 @@ def main():
                     col = cols[idx % 4]
                     color = "#f85149" if res['trend'] == 'Overbought' else ("#3fb950" if res['trend'] == 'Oversold' else "#8b949e")
                     with col:
-                        # [SMART FORMAT]
-                        st.markdown(f"""
-                        <div class="metric-card" style="border-top: 2px solid {color}">
+                        st.markdown(f"""<div class="metric-card" style="border-top: 2px solid {color}">
                             <div class="metric-label">{res['name']}</div>
                             <div class="metric-value">{smart_format(res['price'])}</div>
-                            <div class="metric-sub" style="color:{color}">{res['trend']}</div>
-                        </div>""", unsafe_allow_html=True)
+                            <div class="metric-sub" style="color:{color}">{res['trend']}</div></div>""", unsafe_allow_html=True)
 
             # 2. Target Analysis
             st.markdown(f"### 🔭 TARGET ANALYSIS: {ticker_input}")
-            bt = MARCS_Backtester(ticker_input, capital)
-            with st.spinner("Decoding Market Structure..."):
+            bt = MARCS_Backtester(ticker_input, capital, use_mtf=use_mtf, macro_risk=risk_factor)
+            
+            with st.spinner("Compiling Multi-Dimensional Matrix..."):
                 if bt.fetch_data():
-                    df_equity, df_trades = bt.run()
+                    mtf_info = Multi_Timeframe_Engine.fetch_and_process_weekly(ticker_input)
+                    factors, total_score = Factor_DNA_Engine.analyze_factors(bt.df) # Factor DNA
+                    
+                    df_equity, df_trades, filtered_num = bt.run()
                     last_row = bt.df.iloc[-1]
                     score, signals = Micro_Structure_Engine.get_signals(last_row)
                     
-                    # 計算動態止損與 ATR (針對目前價格)
                     curr_price = last_row['Close']
                     atr_val = last_row['ATR']
                     sl_val = curr_price - (2.5 * atr_val)
-                    tp_val = curr_price + (2.5 * atr_val * 2) # 假設 1:2
-                    fair_value = last_row['EMA20'] # 模擬 Fair Value 為 EMA20
-                    
-                    # [UI Block 1] 核心信號 (Core Signals)
-                    c1, c2, c3, c4 = st.columns(4)
-                    with c1: st.metric("MICRO SCORE", f"{score}", delta="Bullish" if score>60 else "Bearish")
-                    with c2: st.metric("ADX STRENGTH", f"{last_row['ADX']:.1f}", delta="Trending" if last_row['ADX']>20 else "Choppy")
-                    
-                    ret = 0
-                    if not df_equity.empty:
-                        ret = (df_equity['Equity'].iloc[-1] - df_equity['Equity'].iloc[0]) / df_equity['Equity'].iloc[0] * 100
-                    with c3: st.metric("2Y RETURN", f"{ret:.1f}%", f"{len(df_trades)} Trades")
-                    
-                    mc_dd = 0.0
-                    if not df_trades.empty:
-                        sell_trades = df_trades[df_trades['Type']=='SELL']
-                        mc_res = Risk_Entropy_Engine.run_monte_carlo_historical(sell_trades, capital, simulations=100)
-                        if mc_res is not None: mc_dd = mc_res['max_dd'].quantile(0.95) * 100
-                    with c4: st.metric("VAR (95%)", f"-{mc_dd:.1f}%", "Monte Carlo Est.")
+                    tp_val = curr_price + (2.5 * atr_val * 2)
+                    fair_value = last_row['EMA20']
 
-                    # [UI Block 2] 高精度價格儀表板 (Precision Board)
-                    st.markdown("#### 🛡️ RISK & VALUATION MATRIX")
+                    # [FACTOR RADAR]
+                    st.markdown("#### 🧬 SIX-FACTOR DNA")
+                    if factors:
+                        f1, f2, f3, f4, f5, f6 = st.columns(6)
+                        def render_factor(col, label, s):
+                            c = "#3fb950" if s >= 70 else ("#e6a23c" if s >= 40 else "#f85149")
+                            with col:
+                                st.markdown(f"""<div style="text-align:center">
+                                <div style="font-size:12px; color:#8b949e">{label}</div>
+                                <div style="font-size:20px; font-weight:bold; color:{c}">{s:.0f}</div>
+                                <div style="height:4px; width:100%; background:#30363d; margin-top:5px; border-radius:2px;">
+                                    <div style="height:100%; width:{s}%; background:{c}; border-radius:2px;"></div>
+                                </div></div>""", unsafe_allow_html=True)
+                        render_factor(f1, "MOMENTUM", factors['Momentum'])
+                        render_factor(f2, "TREND", factors['Trend'])
+                        render_factor(f3, "VOLATILITY", factors['Volatility'])
+                        render_factor(f4, "VOLUME", factors['Volume'])
+                        render_factor(f5, "STRENGTH", factors['Strength'])
+                        render_factor(f6, "CONSISTENCY", factors['Consistency'])
                     
-                    # 這一區使用 HTML Card 來確保 smart_format 的渲染效果
+                    # [MTF INFO]
+                    if mtf_info:
+                        w_trend = mtf_info['trend']
+                        trend_color = "#3fb950" if w_trend == "BULL" else "#f85149"
+                        st.markdown("#### 🌊 WEEKLY TIDE")
+                        m1, m2, m3, m4 = st.columns(4)
+                        with m1:
+                            st.markdown(f"""<div class="metric-card" style="border-left: 4px solid {trend_color}">
+                            <div class="metric-label">WEEKLY TREND</div>
+                            <div class="metric-value" style="color:{trend_color}">{w_trend}</div></div>""", unsafe_allow_html=True)
+                        with m2: st.metric("WEEKLY MOMENTUM", mtf_info['strength'])
+                        with m3: st.metric("WEEKLY SUPPORT", smart_format(mtf_info['ema']))
+                        with m4: st.metric("NOISE FILTERED", filtered_num)
+
+                    # [PRECISION BOARD]
+                    st.markdown("#### 🎯 TACTICAL BOARD")
                     r1, r2, r3, r4 = st.columns(4)
-                    
-                    # ATR Card
                     with r1:
-                        st.markdown(f"""<div class="metric-card"><div class="metric-label">ATR (Volatility)</div>
+                         st.markdown(f"""<div class="metric-card"><div class="metric-label">ATR (Volatility)</div>
                         <div class="metric-value">{smart_format(atr_val, is_currency=False)}</div>
                         <div class="metric-sub">Risk Unit</div></div>""", unsafe_allow_html=True)
-                        
-                    # Stop Loss Card
                     with r2:
-                        st.markdown(f"""<div class="metric-card" style="border-bottom: 2px solid #f85149">
+                         st.markdown(f"""<div class="metric-card" style="border-bottom: 2px solid #f85149">
                         <div class="metric-label">STOP LOSS</div>
                         <div class="metric-value" style="color:#f85149">{smart_format(sl_val)}</div>
                         <div class="metric-sub">-2.5 ATR</div></div>""", unsafe_allow_html=True)
-                        
-                    # Take Profit Card
                     with r3:
-                        st.markdown(f"""<div class="metric-card" style="border-bottom: 2px solid #3fb950">
+                         st.markdown(f"""<div class="metric-card" style="border-bottom: 2px solid #3fb950">
                         <div class="metric-label">TAKE PROFIT</div>
                         <div class="metric-value" style="color:#3fb950">{smart_format(tp_val)}</div>
                         <div class="metric-sub">+5.0 ATR</div></div>""", unsafe_allow_html=True)
-                        
-                    # Fair Value Gauge (模擬截圖效果)
                     with r4:
                         fair_gap = (curr_price - fair_value) / fair_value
                         gap_label = "Fair"
                         if fair_gap > 0.05: gap_label = "Overvalued"
                         elif fair_gap < -0.05: gap_label = "Undervalued"
-                        
                         st.markdown(f"""<div class="metric-card">
                         <div class="metric-label">Fair Value Gauge</div>
                         <div class="metric-value">{smart_format(fair_value)}</div>
@@ -406,43 +584,36 @@ def main():
                             {gap_label} ({fair_gap*100:+.1f}%)
                         </div></div>""", unsafe_allow_html=True)
 
-                    # [UI Block 3] 視覺化圖表
+                    # Visuals
                     tab1, tab2 = st.tabs(["CHART", "EQUITY"])
                     with tab1:
                         fig1, ax1 = plt.subplots(figsize=(12, 5))
                         p_df = bt.df.tail(150)
                         
-                        # 主價格線
                         ax1.plot(p_df.index, p_df['Close'], color='#e6edf3', lw=1.5, label='Price')
                         ax1.plot(p_df.index, p_df['K_Upper'], color='#00f2ff', ls='--', alpha=0.3)
                         ax1.plot(p_df.index, p_df['K_Lower'], color='#00f2ff', ls='--', alpha=0.3)
                         ax1.fill_between(p_df.index, p_df['K_Upper'], p_df['K_Lower'], color='#00f2ff', alpha=0.05)
                         
-                        # [FIX] 繪製高精度 SL/TP 線
-                        ax1.axhline(y=sl_val, color='#f85149', linestyle='--', alpha=0.8, lw=1,
-                                    label=f'SL: {smart_format(sl_val, is_currency=False)}')
-                        ax1.axhline(y=tp_val, color='#3fb950', linestyle='--', alpha=0.8, lw=1,
-                                    label=f'TP: {smart_format(tp_val, is_currency=False)}')
+                        if 'W_EMA20' in p_df.columns:
+                             ax1.plot(p_df.index, p_df['W_EMA20'], color='#d2a8ff', lw=2, label='Weekly Trend (EMA20)')
 
-                        # [FIX] Y軸動態精度設定 (移除 1e-5)
-                        if curr_price < 0.0001:
-                             ax1.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.8f'))
-                        elif curr_price < 1:
-                            ax1.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.6f'))
-                        else:
-                            ax1.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2f'))
+                        ax1.axhline(y=sl_val, color='#f85149', linestyle='--', alpha=0.8, lw=1, label=f'SL: {smart_format(sl_val, is_currency=False)}')
+                        ax1.axhline(y=tp_val, color='#3fb950', linestyle='--', alpha=0.8, lw=1, label=f'TP: {smart_format(tp_val, is_currency=False)}')
+
+                        # Y軸動態精度
+                        if curr_price < 0.0001: ax1.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.8f'))
+                        elif curr_price < 1: ax1.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.6f'))
+                        else: ax1.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2f'))
                             
-                        # 買賣點標記
                         if not df_trades.empty:
                             bs = df_trades[(df_trades['Type']=='BUY') & (df_trades['Date']>=p_df.index[0])]
                             ss = df_trades[(df_trades['Type']=='SELL') & (df_trades['Date']>=p_df.index[0])]
                             ax1.scatter(bs['Date'], bs['Price'], marker='^', color='#3fb950', s=100, zorder=5)
                             ax1.scatter(ss['Date'], ss['Price'], marker='v', color='#f85149', s=100, zorder=5)
                         
-                        # 圖表樣式美化
                         ax1.set_facecolor('#0d1117'); fig1.patch.set_facecolor('#0d1117')
-                        ax1.tick_params(colors='#8b949e')
-                        ax1.grid(True, color='#30363d', alpha=0.3)
+                        ax1.tick_params(colors='#8b949e'); ax1.grid(True, color='#30363d', alpha=0.3)
                         ax1.legend(facecolor='#0d1117', labelcolor='#8b949e', loc='upper left')
                         st.pyplot(fig1)
 
@@ -450,7 +621,6 @@ def main():
                         fig2, ax2 = plt.subplots(figsize=(12, 4))
                         if not df_equity.empty:
                             ax2.plot(pd.to_datetime(df_equity['Date']), df_equity['Equity'], color='#238636', lw=2)
-                        ax2.set_title("Equity Curve", color='white')
                         ax2.set_facecolor('#0d1117'); fig2.patch.set_facecolor('#0d1117')
                         ax2.tick_params(colors='#8b949e'); ax2.grid(True, color='#30363d', alpha=0.3)
                         st.pyplot(fig2)
@@ -473,9 +643,7 @@ def main():
 
         if st.button("🧬 RUN SIMULATION", type="primary"):
             with st.spinner(f"Simulating {lab_sims} universes..."):
-                res = Risk_Entropy_Engine.run_monte_carlo_theoretical(
-                    lab_sims, lab_n_trades, lab_win_rate, lab_rr, lab_risk_pct, lab_capital
-                )
+                res = Risk_Entropy_Engine.run_monte_carlo_theoretical(lab_sims, lab_n_trades, lab_win_rate, lab_rr, lab_risk_pct, lab_capital)
                 final_eqs = np.array(res['final_equities'])
                 max_dds = np.array(res['max_drawdowns'])
                 ruin_prob = (res['ruin_count'] / lab_sims) * 100
@@ -491,14 +659,12 @@ def main():
                 with c_chart1:
                     fig_lab1, ax_lab1 = plt.subplots(figsize=(6, 4))
                     for curve in res['curves']: ax_lab1.plot(curve, color='#00f2ff', alpha=0.1, lw=1)
-                    ax_lab1.set_title("Equity Paths (First 50)", color='white')
                     ax_lab1.set_facecolor('#0d1117'); fig_lab1.patch.set_facecolor('#0d1117')
                     ax_lab1.tick_params(colors='#8b949e'); ax_lab1.grid(True, color='#30363d', alpha=0.3)
                     st.pyplot(fig_lab1)
                 with c_chart2:
                     fig_lab2, ax_lab2 = plt.subplots(figsize=(6, 4))
                     ax_lab2.hist(max_dds * 100, bins=40, color='#f85149', alpha=0.7)
-                    ax_lab2.set_title("Drawdown Distribution", color='white')
                     ax_lab2.set_facecolor('#0d1117'); fig_lab2.patch.set_facecolor('#0d1117')
                     ax_lab2.tick_params(colors='#8b949e'); ax_lab2.grid(True, color='#30363d', alpha=0.3)
                     st.pyplot(fig_lab2)
