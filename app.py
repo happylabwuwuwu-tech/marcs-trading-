@@ -3,351 +3,415 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
+import plotly.express as px
 from plotly.subplots import make_subplots
+from scipy.signal import hilbert
+from scipy.stats import norm
 import warnings
 from datetime import datetime
 
+# 兼容性處理 (Wasserstein Distance)
+try:
+    from scipy.stats import wasserstein_distance
+except ImportError:
+    def wasserstein_distance(u_values, v_values):
+        u_values = np.sort(u_values)
+        v_values = np.sort(v_values)
+        return np.mean(np.abs(u_values - v_values))
+
 # =============================================================================
-# 0. 系統配置與 CSS (The Skin)
+# 0. 系統核心配置 & CSS (The Skin)
 # =============================================================================
 warnings.filterwarnings('ignore')
-st.set_page_config(page_title="MARCS V90 FUSION", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="MARCS ULTIMATE", layout="wide", page_icon="⚛️")
 
-# 引入 "Bento Grid" 暗黑風格與專業排版
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&family=Roboto+Mono:wght@400;700&display=swap');
     
-    /* 全局背景 */
-    .stApp { background-color: #0d1117; font-family: 'Rajdhani', sans-serif; }
+    /* Global Dark Theme */
+    .stApp { background-color: #050505; font-family: 'Rajdhani', sans-serif; color: #c9d1d9; }
     
-    /* Bento Card 風格 */
+    /* Bento Grid Card */
     .metric-card {
-        background-color: #161b22;
-        border: 1px solid #30363d;
-        border-radius: 8px;
-        padding: 15px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.2);
-        margin-bottom: 10px;
+        background-color: #161b22; border: 1px solid #30363d; border-radius: 8px;
+        padding: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); margin-bottom: 10px;
     }
     .metric-label { color: #8b949e; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; font-family: 'Roboto Mono'; }
     .metric-value { color: #e6edf3; font-size: 24px; font-weight: 700; margin: 4px 0; }
     .metric-sub { font-size: 11px; font-family: 'Roboto Mono'; }
     
-    /* 顏色定義 */
-    .c-green { color: #3fb950; }
-    .c-red { color: #f85149; }
-    .c-gold { color: #d29922; }
-    .c-blue { color: #2f81f7; }
+    /* Custom Tags */
+    .tag-physics { background: rgba(210, 168, 255, 0.15); color: #d2a8ff; padding: 2px 6px; border-radius: 4px; font-size: 10px; border: 1px solid rgba(210, 168, 255, 0.3); }
+    .tag-macro { background: rgba(56, 139, 253, 0.15); color: #58a6ff; padding: 2px 6px; border-radius: 4px; font-size: 10px; border: 1px solid rgba(56, 139, 253, 0.3); }
     
-    /* 表格樣式優化 */
-    div[data-testid="stDataFrame"] { border: 1px solid #30363d; border-radius: 8px; }
+    /* Colors */
+    .c-green { color: #3fb950; } .c-red { color: #f85149; } .c-gold { color: #d29922; } .c-purple { color: #d2a8ff; }
 </style>
 """, unsafe_allow_html=True)
 
-# 智能格式化工具
-def smart_format(value, is_currency=True, include_sign=False):
+# 工具函式
+def smart_format(value, is_currency=True):
     if value is None or pd.isna(value): return "N/A"
     val = float(value)
     prefix = "$" if is_currency else ""
-    sign = "+" if include_sign and val > 0 else ("-" if val < 0 else "")
-    val = abs(val)
-    if val < 1 and val > 0: return f"{sign}{prefix}{val:.4f}"
-    return f"{sign}{prefix}{val:,.0f}" if val > 100 else f"{sign}{prefix}{val:,.2f}"
+    if abs(val) < 1 and abs(val) > 0: return f"{prefix}{val:.4f}"
+    return f"{prefix}{val:,.2f}"
 
 # =============================================================================
-# 1. 核心引擎群 (The Brains)
+# 1. 物理引擎核心 (V40 Physics Engine)
 # =============================================================================
-
-class Micro_Structure_Engine:
-    """計算技術指標 (ATR, RSI, Keltner)"""
+class Physics_Engine:
+    """計算 Hilbert Transform, Hurst, VPIN, Chaos"""
+    
     @staticmethod
-    def attach_indicators(df):
-        if df.empty: return df
+    def calc_metrics(df):
+        if df.empty or len(df) < 50: return df
         df = df.copy()
-        c = df['Close']
-        h = df['High']
-        l = df['Low']
         
-        # EMA
-        df['EMA20'] = c.ewm(span=20, adjust=False).mean()
+        c = df['Close'].values
+        v = df['Volume'].values
         
-        # ATR
-        tr = pd.concat([h-l, (h-c.shift()).abs(), (l-c.shift()).abs()], axis=1).max(axis=1)
-        df['ATR'] = tr.rolling(14).mean().fillna(tr.mean())
+        # 1. Hilbert Transform (Phase Sync)
+        # 去除趨勢 (Detrend)
+        ema = pd.Series(c).ewm(span=20).mean()
+        detrended_c = c - ema
+        detrended_v = v - pd.Series(v).rolling(20).mean()
         
-        # Keltner Channels (用於突破策略)
-        atr10 = tr.rolling(10).mean().fillna(tr.mean())
-        df['K_Upper'] = df['EMA20'] + 2.0 * atr10
-        df['K_Lower'] = df['EMA20'] - 2.0 * atr10
+        # 填充 NaN
+        detrended_c = detrended_c.fillna(0).values
+        detrended_v = detrended_v.fillna(0).values
         
-        # RSI
-        delta = c.diff()
+        # 計算相位
+        analytic_c = hilbert(detrended_c)
+        analytic_v = hilbert(detrended_v)
+        phase_c = np.angle(analytic_c)
+        phase_v = np.angle(analytic_v)
+        
+        # Sync: 1 = 共振, -1 = 背離
+        df['Sync'] = np.cos(phase_c - phase_v)
+        df['Sync_Smooth'] = df['Sync'].rolling(5).mean()
+        
+        # 2. VPIN Proxy (Order Flow Toxicity)
+        delta_p = np.diff(c, prepend=c[0])
+        sigma = np.std(delta_p) + 1e-9
+        cdf = norm.cdf(delta_p / sigma)
+        buy_vol = v * cdf
+        sell_vol = v * (1 - cdf)
+        oi = np.abs(buy_vol - sell_vol)
+        df['VPIN'] = pd.Series(oi).rolling(20).sum() / (pd.Series(v).rolling(20).sum() + 1e-9)
+        
+        # 3. Chaos (Wasserstein)
+        log_ret = np.log(df['Close']).diff().fillna(0)
+        # 滾動計算 Chaos (比較 t與t-1的分布)
+        chaos_list = [0]*40
+        for i in range(40, len(df)):
+            w2 = wasserstein_distance(log_ret[i-20:i], log_ret[i-40:i-20])
+            chaos_list.append(w2 * 1000) # Scale up
+        df['Chaos'] = pd.Series(chaos_list, index=df.index).fillna(0)
+        
+        # 4. Technicals (ATR/RSI) for Risk Mgmt
+        delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rs = gain / (loss + 1e-9)
         df['RSI'] = 100 - (100 / (1 + rs))
         
-        return df.fillna(method='bfill')
+        return df
 
     @staticmethod
     def get_signal_score(row):
-        """簡單評分用於掃描"""
+        """用於掃描器的快速評分"""
         score = 50
-        if row['Close'] > row['EMA20']: score += 20
-        if row['RSI'] > 50: score += 10
-        if row['RSI'] > 70: score -= 10 # 過熱
-        if row['Close'] > row['K_Upper']: score += 20 # 突破
+        # 物理共振加分
+        if row['Sync_Smooth'] > 0.5: score += 25
+        if row['Sync_Smooth'] < -0.5: score -= 15
+        
+        # 籌碼安定加分
+        if row['VPIN'] < 0.3: score += 10
+        if row['VPIN'] > 0.6: score -= 20
+        
+        # 動能加分
+        if row['RSI'] > 50 and row['RSI'] < 80: score += 15
+        
         return min(max(score, 0), 100)
 
-class Backtester_Pro:
-    """專業回測引擎：含手續費、稅金、基準比較"""
-    def __init__(self, ticker, initial_capital, fee_rate=0.001425*0.6, tax_rate=0.003):
+# =============================================================================
+# 2. 宏觀模組 (V100 Macro Oracle)
+# =============================================================================
+class Macro_Brain:
+    INDICES = {
+        "RISK": ["^NDX", "^SOX", "BTC-USD", "^TWII"],
+        "SAFE": ["TLT", "GLD", "DX-Y.NYB"],
+        "SENTIMENT": ["^VIX"]
+    }
+    ALL_TICKERS = [t for cat in INDICES.values() for t in cat]
+
+    @staticmethod
+    @st.cache_data(ttl=3600) # 緩存1小時
+    def fetch_macro_data():
+        df = yf.download(Macro_Brain.ALL_TICKERS, period="6mo", progress=False)
+        return df
+
+    @staticmethod
+    def analyze_macro(df):
+        metrics = {}
+        df = df.ffill().bfill()
+        # 相關性矩陣
+        corr = df['Close'].pct_change().tail(60).corr()
+        
+        for ticker in df['Close'].columns:
+            close = df['Close'][ticker]
+            # 簡單物理計算
+            log_ret = np.log(close).diff().dropna()
+            w2 = wasserstein_distance(log_ret.tail(20), log_ret.iloc[-40:-20])
+            chaos = w2 * 1000
+            
+            ma50 = close.rolling(50).mean().iloc[-1]
+            trend = (close.iloc[-1] - ma50) / ma50
+            
+            metrics[ticker] = {
+                "Price": close.iloc[-1],
+                "Trend%": trend * 100,
+                "Chaos": chaos
+            }
+            
+        # 判斷體制
+        ndx = metrics.get('^NDX', {}).get('Trend%', 0)
+        tlt = metrics.get('TLT', {}).get('Trend%', 0)
+        vix = metrics.get('^VIX', {}).get('Price', 20)
+        
+        regime = "NEUTRAL"
+        color = "#8b949e"
+        if ndx > 0 and tlt > -2: regime, color = "GOLDILOCKS (舒適)", "#3fb950"
+        elif ndx < 0 and tlt > 0 and vix > 25: regime, color = "RECESSION (衰退)", "#f85149"
+        elif ndx < 0 and tlt < -2: regime, color = "INFLATION (通膨)", "#d2a8ff"
+        
+        # 計算總分
+        score = 50
+        if metrics.get('^VIX',{}).get('Price',20) < 20: score += 10
+        if metrics.get('^NDX',{}).get('Trend%',0) > 0: score += 10
+        if metrics.get('DX-Y.NYB',{}).get('Trend%',0) < 0: score += 10
+        
+        return metrics, corr, regime, color, score
+
+# =============================================================================
+# 3. 回測與策略模組 (V90 + V40 Fusion)
+# =============================================================================
+class Unified_Backtester:
+    def __init__(self, ticker, capital, fee_rate, tax_rate, use_physics=True):
         self.ticker = ticker
-        self.capital = initial_capital
+        self.capital = capital
         self.fee_rate = fee_rate
         self.tax_rate = tax_rate
-        self.df = pd.DataFrame()
-
-    def fetch_data(self):
-        try:
-            self.df = yf.download(self.ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
-            if self.df.empty: return False
-            if isinstance(self.df.columns, pd.MultiIndex): self.df.columns = self.df.columns.get_level_values(0)
-            self.df = Micro_Structure_Engine.attach_indicators(self.df)
-            return True
-        except: return False
+        self.use_physics = use_physics
 
     def run(self):
+        # 下載數據 (Physics 需要連續數據，推薦 1h，但日線也可以跑)
+        df = yf.download(self.ticker, period="1y", interval="1h", progress=False, auto_adjust=True)
+        if df.empty: 
+            # Fallback to Daily if 1h fails (e.g. non-US stocks often fail on 1h)
+            df = yf.download(self.ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
+            
+        if df.empty: return None, None, None
+
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        
+        # 計算物理指標
+        df = Physics_Engine.calc_metrics(df)
+        df = df.dropna()
+        
+        # 初始化回測變數
         cash = self.capital
         position = 0
         trades = []
         equity_curve = []
         
-        # 基準設定 (Buy & Hold)
-        start_price = self.df.iloc[20]['Close']
+        # 基準 (Buy & Hold)
+        start_price = df['Close'].iloc[0]
         bh_shares = self.capital // start_price
-        bh_cash = self.capital - (bh_shares * start_price)
         
-        # DCA 設定 (每月定投)
-        dca_cash = 0
-        dca_shares = 0
-        dca_invested = 0
-        monthly_budget = self.capital / 12 
-
         total_fees = 0
-        
-        # 模擬回測 loop
-        for i in range(20, len(self.df)):
-            date = self.df.index[i]
-            row = self.df.iloc[i]
-            price = row['Close']
-            
-            # --- 策略邏輯 (MARCS Lite) ---
-            # 進場: 突破上軌 & RSI 健康
-            buy_signal = (price > row['K_Upper']) and (row['RSI'] > 50) and (row['RSI'] < 80)
-            # 出場: 跌破 EMA20
-            sell_signal = (price < row['EMA20'])
 
+        for i in range(len(df)):
+            date = df.index[i]
+            price = df['Close'].iloc[i]
+            sync = df['Sync_Smooth'].iloc[i]
+            vpin = df['VPIN'].iloc[i]
+            
+            # --- 策略核心 (Physics Fusion) ---
+            # 進場: 能量共振 (Sync > 0.5) & 籌碼安定 (VPIN < 0.5)
+            buy_signal = (sync > 0.5) and (vpin < 0.5)
+            
+            # 出場: 能量背離 (Sync < 0) 或 籌碼劇毒 (VPIN > 0.7)
+            sell_signal = (sync < -0.2) or (vpin > 0.7)
+            
             # 執行交易
             if position > 0 and sell_signal:
-                # 賣出 (扣稅+費)
                 gross = position * price
                 fee = gross * self.fee_rate
                 tax = gross * self.tax_rate
                 cash += (gross - fee - tax)
                 total_fees += (fee + tax)
-                
-                trades.append({'Date': date, 'Type': 'SELL', 'Price': price, 'Fee': fee+tax})
+                trades.append({'Date': date, 'Type': 'SELL', 'Price': price, 'Reason': 'Physics Exit'})
                 position = 0
-                
+            
             elif position == 0 and buy_signal:
-                # 買入 (扣費)
-                cost = cash * 0.98 # 留一點現金buffer
+                cost = cash * 0.98 # Buffer
                 fee = cost * self.fee_rate
                 shares = (cost - fee) // price
                 if shares > 0:
                     cash -= (shares * price + fee)
                     total_fees += fee
                     position = shares
-                    trades.append({'Date': date, 'Type': 'BUY', 'Price': price, 'Fee': fee})
+                    trades.append({'Date': date, 'Type': 'BUY', 'Price': price})
 
-            # --- 計算權益 ---
-            # 1. 策略
+            # 計算淨值
             strat_val = cash + (position * price)
+            bh_val = bh_shares * price # 簡單對照
             
-            # 2. Buy & Hold
-            bh_val = bh_cash + (bh_shares * price)
+            equity_curve.append({'Date': date, 'Strategy': strat_val, 'BuyHold': bh_val})
             
-            # 3. DCA (簡化: 每月1號買入)
-            if date.day == 1 and i > 20:
-                new_shares = monthly_budget // price
-                dca_shares += new_shares
-                dca_invested += (new_shares * price)
-            
-            dca_current_val = (dca_shares * price) + (self.capital - dca_invested) # 簡單計算
-
-            equity_curve.append({
-                'Date': date,
-                'Strategy': strat_val,
-                'BuyHold': bh_val,
-                'DCA': dca_current_val if dca_invested > 0 else self.capital
-            })
-            
-        return pd.DataFrame(equity_curve), pd.DataFrame(trades), total_fees
+        return pd.DataFrame(equity_curve), pd.DataFrame(trades), df
 
 # =============================================================================
-# 2. UI 組件 (The View)
+# 4. 介面渲染函式 (UI Renderers)
 # =============================================================================
 
-def render_strategy_lab(ticker, capital):
-    """被動分析模式：專業儀表板"""
-    st.markdown(f"### 🧪 STRATEGY LAB: {ticker}")
+def render_macro_oracle():
+    st.markdown("### 🌍 MACRO ORACLE (宏觀預言機)")
     
-    bt = Backtester_Pro(ticker, capital)
+    with st.spinner("Connecting to Global Markets..."):
+        df = Macro_Brain.fetch_macro_data()
+        if df.empty: st.error("Data connection failed."); return
+        
+        metrics, corr, regime, reg_color, score = Macro_Brain.analyze_macro(df)
+        
+        # Top Metrics
+        c1, c2, c3, c4 = st.columns(4)
+        c1.markdown(f"<div class='metric-card'><div class='metric-label'>MACRO SCORE</div><div class='metric-value'>{score}</div><div class='metric-sub'>Risk Appetite</div></div>", unsafe_allow_html=True)
+        c2.markdown(f"<div class='metric-card'><div class='metric-label'>REGIME</div><div style='font-size:20px; font-weight:bold; color:{reg_color}'>{regime}</div><div class='metric-sub'>Current State</div></div>", unsafe_allow_html=True)
+        c3.markdown(f"<div class='metric-card'><div class='metric-label'>VIX</div><div class='metric-value'>{metrics['^VIX']['Price']:.2f}</div><div class='metric-sub'>Fear Index</div></div>", unsafe_allow_html=True)
+        c4.markdown(f"<div class='metric-card'><div class='metric-label'>LIQUIDITY (TLT)</div><div class='metric-value' style='color:{'#3fb950' if metrics['TLT']['Trend%']>0 else '#f85149'}'>{metrics['TLT']['Trend%']:+.1f}%</div><div class='metric-sub'>Bond Trend</div></div>", unsafe_allow_html=True)
+
+        # Correlation Matrix
+        st.markdown("#### 🔗 Global Correlation Heatmap (60D)")
+        fig_corr = px.imshow(corr, text_auto=True, color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto")
+        fig_corr.update_layout(paper_bgcolor="#050505", plot_bgcolor="#050505", height=400)
+        st.plotly_chart(fig_corr, use_container_width=True)
+
+def render_market_scanner():
+    st.markdown("### 🔭 QUANTUM SCANNER (物理掃描器)")
     
-    with st.spinner("Simulating Market Replay..."):
-        if bt.fetch_data():
-            df_eq, df_tr, fees = bt.run()
+    default_list = "BTC-USD, ETH-USD, SOL-USD, NVDA, TSLA, AAPL, COIN, MSTR"
+    user_input = st.text_area("Watchlist (Comma Separated)", default_list)
+    tickers = [x.strip() for x in user_input.split(",")]
+    
+    if st.button("🚀 INITIATE SCAN", type="primary"):
+        results = []
+        progress_bar = st.progress(0)
+        
+        for i, t in enumerate(tickers):
+            try:
+                # 掃描模式用日線即可，速度較快
+                df = yf.download(t, period="6mo", progress=False, auto_adjust=True)
+                if not df.empty:
+                    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+                    df = Physics_Engine.calc_metrics(df)
+                    row = df.iloc[-1]
+                    score = Physics_Engine.get_signal_score(row)
+                    
+                    if score > 0:
+                        results.append({
+                            "Ticker": t,
+                            "Price": row['Close'],
+                            "Score": score,
+                            "Sync": row['Sync_Smooth'],
+                            "VPIN": row['VPIN'],
+                            "RSI": row['RSI']
+                        })
+            except: pass
+            progress_bar.progress((i+1)/len(tickers))
             
-            if df_eq.empty:
-                st.error("Insufficient data for simulation.")
-                return
-
-            # --- Row 1: The Arena (Plotly) ---
-            st.markdown("#### ⚔️ PERFORMANCE ARENA")
-            fig = go.Figure()
-            
-            # 繪製三條曲線
-            fig.add_trace(go.Scatter(x=df_eq['Date'], y=df_eq['BuyHold'], name='Buy & Hold', line=dict(color='#2f81f7', width=2), opacity=0.5))
-            fig.add_trace(go.Scatter(x=df_eq['Date'], y=df_eq['DCA'], name='DCA (Safe)', line=dict(color='#3fb950', width=2, dash='dot')))
-            fig.add_trace(go.Scatter(x=df_eq['Date'], y=df_eq['Strategy'], name='MARCS Alpha', line=dict(color='#d29922', width=3), fill='tonexty', fillcolor='rgba(210, 153, 34, 0.1)'))
-            
-            fig.update_layout(template="plotly_dark", paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=450, hovermode="x unified", margin=dict(l=10,r=10,t=10,b=10))
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # --- Row 2: Metrics (Bento Grid) ---
-            final_val = df_eq.iloc[-1]['Strategy']
-            pnl = final_val - capital
-            pnl_pct = (pnl / capital) * 100
-            bh_pnl_pct = ((df_eq.iloc[-1]['BuyHold'] - capital) / capital) * 100
-            
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: 
-                st.markdown(f"""<div class="metric-card"><div class="metric-label">NET PROFIT</div>
-                <div class="metric-value {('c-green' if pnl>0 else 'c-red')}">{smart_format(pnl)}</div>
-                <div class="metric-sub">{pnl_pct:+.2f}% Return</div></div>""", unsafe_allow_html=True)
-            with c2:
-                alpha = pnl_pct - bh_pnl_pct
-                st.markdown(f"""<div class="metric-card"><div class="metric-label">ALPHA vs B&H</div>
-                <div class="metric-value {('c-gold' if alpha>0 else 'c-red')}">{alpha:+.2f}%</div>
-                <div class="metric-sub">Strategy Edge</div></div>""", unsafe_allow_html=True)
-            with c3:
-                st.markdown(f"""<div class="metric-card"><div class="metric-label">FRICTION COST</div>
-                <div class="metric-value c-red">{smart_format(fees)}</div>
-                <div class="metric-sub">Fees & Tax Paid</div></div>""", unsafe_allow_html=True)
-            with c4:
-                st.markdown(f"""<div class="metric-card"><div class="metric-label">TRADE COUNT</div>
-                <div class="metric-value">{len(df_tr)}</div>
-                <div class="metric-sub">Signals Executed</div></div>""", unsafe_allow_html=True)
-            
-            # --- Row 3: Technicals ---
-            with st.expander("📊 Technical Analysis & Signals", expanded=False):
-                fig_t = go.Figure()
-                p_df = bt.df.tail(100)
-                fig_t.add_trace(go.Candlestick(x=p_df.index, open=p_df['Open'], high=p_df['High'], low=p_df['Low'], close=p_df['Close'], name='Price'))
-                fig_t.add_trace(go.Scatter(x=p_df.index, y=p_df['K_Upper'], line=dict(color='cyan', width=1, dash='dot'), name='Breakout Line'))
-                
-                # 標記買賣點
-                if not df_tr.empty:
-                    buys = df_tr[df_tr['Type']=='BUY']
-                    sells = df_tr[df_tr['Type']=='SELL']
-                    fig_t.add_trace(go.Scatter(x=buys['Date'], y=buys['Price']*0.98, mode='markers', marker=dict(symbol='triangle-up', color='#3fb950', size=10), name='BUY'))
-                    fig_t.add_trace(go.Scatter(x=sells['Date'], y=sells['Price']*1.02, mode='markers', marker=dict(symbol='triangle-down', color='#f85149', size=10), name='SELL'))
-                
-                fig_t.update_layout(template="plotly_dark", paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", height=400, xaxis_rangeslider_visible=False)
-                st.plotly_chart(fig_t, use_container_width=True)
-
+        if results:
+            res_df = pd.DataFrame(results).sort_values("Score", ascending=False)
+            st.dataframe(
+                res_df.style.background_gradient(subset=['Score'], cmap='Greens')
+                      .format({'Price': "{:.2f}", 'Sync': "{:.2f}", 'VPIN': "{:.2f}", 'RSI': "{:.0f}"}),
+                use_container_width=True
+            )
         else:
-            st.error(f"Failed to load data for {ticker}")
+            st.info("No tickers found or data error.")
 
-def render_scanner_mode(watchlist):
-    """主動選股模式：掃描觀察清單"""
-    st.markdown("### 🔭 ACTIVE MARKET SCANNER")
-    st.info(f"Scanning {len(watchlist)} targets for 'Phoenix' setups...")
+def render_strategy_lab():
+    st.markdown("### 🧪 PHYSICS LAB (深度策略實驗室)")
     
-    results = []
+    c1, c2, c3 = st.columns([1, 1, 1])
+    ticker = c1.text_input("Target Ticker", "BTC-USD")
+    capital = c2.number_input("Capital", 10000)
+    fee = c3.number_input("Fee Rate", 0.001, format="%.4f")
     
-    # Progress Bar
-    my_bar = st.progress(0)
-    
-    for i, ticker in enumerate(watchlist):
-        try:
-            df = yf.download(ticker, period="3mo", progress=False, auto_adjust=True)
-            if not df.empty:
-                if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-                df = Micro_Structure_Engine.attach_indicators(df)
-                last_row = df.iloc[-1]
-                
-                score = Micro_Structure_Engine.get_signal_score(last_row)
-                
-                # 只有分數 > 60 才顯示
-                if score >= 60:
-                    results.append({
-                        "Ticker": ticker.replace(".TW", ""),
-                        "Price": last_row['Close'],
-                        "Score": score,
-                        "RSI": round(last_row['RSI'], 1),
-                        "Trend": "Bull" if last_row['Close'] > last_row['EMA20'] else "Bear"
-                    })
-        except:
-            pass
-        my_bar.progress((i + 1) / len(watchlist))
-    
-    if results:
-        res_df = pd.DataFrame(results).sort_values("Score", ascending=False)
-        st.markdown("#### 🔥 Potential Targets")
-        # 使用 Styler 進行著色
-        st.dataframe(
-            res_df.style.background_gradient(subset=['Score'], cmap='Greens'),
-            use_container_width=True
-        )
-    else:
-        st.warning("No high-probability setups found today.")
+    if st.button("🔬 RUN SIMULATION", type="primary"):
+        with st.spinner("Running Physics Simulation (Hilbert/Hurst)..."):
+            ub = Unified_Backtester(ticker, capital, fee, 0.0) # Tax設為0簡化，可自行添加
+            df_eq, df_tr, df_raw = ub.run()
+            
+            if df_eq is None: st.error("Simulation Failed."); return
+            
+            # 1. 績效總結
+            final_ret = (df_eq['Strategy'].iloc[-1] - capital) / capital * 100
+            bh_ret = (df_eq['BuyHold'].iloc[-1] - capital) / capital * 100
+            
+            m1, m2, m3, m4 = st.columns(4)
+            m1.markdown(f"<div class='metric-card'><div class='metric-label'>NET RETURN</div><div class='metric-value' style='color:{'#3fb950' if final_ret>0 else '#f85149'}'>{final_ret:+.2f}%</div></div>", unsafe_allow_html=True)
+            m2.markdown(f"<div class='metric-card'><div class='metric-label'>ALPHA vs HOLD</div><div class='metric-value' style='color:#d2a8ff'>{(final_ret - bh_ret):+.2f}%</div></div>", unsafe_allow_html=True)
+            m3.markdown(f"<div class='metric-card'><div class='metric-label'>TRADES</div><div class='metric-value'>{len(df_tr)}</div></div>", unsafe_allow_html=True)
+            m4.markdown(f"<div class='metric-card'><div class='metric-label'>LAST SYNC</div><div class='metric-value'>{df_raw['Sync_Smooth'].iloc[-1]:.2f}</div></div>", unsafe_allow_html=True)
+            
+            # 2. 雙圖表 (Price + Physics)
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+            
+            # Price
+            fig.add_trace(go.Scatter(x=df_raw.index, y=df_raw['Close'], name='Price', line=dict(color='#8b949e', width=1)), row=1, col=1)
+            # Buy/Sell Signals
+            if not df_tr.empty:
+                buys = df_tr[df_tr['Type']=='BUY']
+                sells = df_tr[df_tr['Type']=='SELL']
+                fig.add_trace(go.Scatter(x=buys['Date'], y=buys['Price'], mode='markers', marker=dict(symbol='triangle-up', size=10, color='#00f2ff'), name='Buy'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=sells['Date'], y=sells['Price'], mode='markers', marker=dict(symbol='triangle-down', size=10, color='#f85149'), name='Sell'), row=1, col=1)
+            
+            # Physics (Sync)
+            fig.add_trace(go.Scatter(x=df_raw.index, y=df_raw['Sync_Smooth'], name='Phase Sync', line=dict(color='#d2a8ff', width=2)), row=2, col=1)
+            fig.add_hrect(y0=0.5, y1=1.0, row=2, col=1, fillcolor="#d2a8ff", opacity=0.1, line_width=0)
+            fig.add_hline(y=0, row=2, col=1, line_dash="dot", line_color="#333")
+            
+            fig.update_layout(template="plotly_dark", height=600, paper_bgcolor="#050505", plot_bgcolor="#050505")
+            st.plotly_chart(fig, use_container_width=True)
 
 # =============================================================================
-# 3. 主程序 (Main Loop)
+# 5. 主程式入口 (Main Loop)
 # =============================================================================
 def main():
-    # 側邊欄控制
-    st.sidebar.title("⚡ MARCS V90")
-    st.sidebar.markdown("---")
-    
-    mode = st.sidebar.radio("SYSTEM MODE", ["🔭 Market Scanner (Active)", "🧪 Strategy Lab (Passive)"])
-    
-    st.sidebar.markdown("---")
-    
-    if "Scanner" in mode:
-        # 主動模式
-        # 這裡你可以放入你關注的 20-30 檔股票，不建議放 1700 檔以免跑太久
-        default_list = "2330, 2317, 2454, 2603, 2609, 2618, 3035, 3037, 2382, 3231"
-        user_list = st.sidebar.text_area("Watchlist (Comma separated)", default_list)
-        targets = [f"{x.strip()}.TW" for x in user_list.split(",")]
+    with st.sidebar:
+        st.title("⚡ MARCS ULT")
+        st.caption("v100.2 | Physics Core")
+        st.markdown("---")
         
-        if st.sidebar.button("🚀 RUN SCAN", type="primary"):
-            render_scanner_mode(targets)
-            
-    else:
-        # 被動模式
-        ticker = st.sidebar.text_input("TARGET TICKER", "2330.TW")
-        capital = st.sidebar.number_input("CAPITAL", 1000000, step=100000)
+        mode = st.radio("SYSTEM MODULE", [
+            "🌍 MACRO ORACLE", 
+            "🔭 QUANTUM SCANNER", 
+            "🧪 PHYSICS LAB"
+        ])
         
-        st.sidebar.markdown("##### Friction Settings")
-        fee = st.sidebar.number_input("Fee (%)", 0.0, 1.0, 0.1425, format="%.4f")
-        tax = st.sidebar.number_input("Tax (%)", 0.0, 1.0, 0.3, format="%.2f")
-        
-        if st.sidebar.button("🔬 ANALYZE", type="primary"):
-            render_strategy_lab(ticker, capital)
+        st.markdown("---")
+        st.info("System Status: ONLINE")
+    
+    if mode == "🌍 MACRO ORACLE":
+        render_macro_oracle()
+    elif mode == "🔭 QUANTUM SCANNER":
+        render_market_scanner()
+    elif mode == "🧪 PHYSICS LAB":
+        render_strategy_lab()
 
 if __name__ == "__main__":
     main()
