@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
 # =============================================================================
-# 0. 系統補丁 & Imports
+# 0. 系統補丁 & Imports (必要)
 # =============================================================================
 try:
     import distutils.version
@@ -46,9 +46,9 @@ except ImportError:
 warnings.filterwarnings('ignore')
 
 # =============================================================================
-# 1. 視覺核心
+# 1. 視覺核心 (CSS)
 # =============================================================================
-st.set_page_config(page_title="MARCS V140 COMBAT", layout="wide", page_icon="⚔️")
+st.set_page_config(page_title="MARCS V150 INFINITY", layout="wide", page_icon="⚛️")
 
 st.markdown("""
 <style>
@@ -71,7 +71,7 @@ st.markdown("""
     .signal-box { background: linear-gradient(135deg, rgba(22, 27, 34, 0.9), rgba(13, 17, 23, 0.95)); border: 1px solid #30363d; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 20px; backdrop-filter: blur(10px); }
     .big-signal { font-size: 42px; font-weight: 800; margin: 10px 0; font-family: 'JetBrains Mono'; }
     
-    /* 戰術數據卡 (Tactical Grid) - 修復回歸 */
+    /* 戰術數據卡 */
     .metric-card { background: rgba(22, 27, 34, 0.85); border: 1px solid #30363d; border-radius: 8px; padding: 15px; margin-bottom: 10px; text-align: left; }
     .highlight-lbl { font-size: 11px; color: #8b949e; letter-spacing: 1px; text-transform: uppercase; font-family: 'Rajdhani'; }
     .highlight-val { font-size: 22px; font-weight: bold; color: #e6edf3; font-family: 'JetBrains Mono'; margin-top: 5px; }
@@ -93,7 +93,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# 2. 數據獲取層
+# 2. 數據獲取與清單層
 # =============================================================================
 @st.cache_data(ttl=3600)
 def robust_download(ticker, period="2y"):
@@ -104,6 +104,25 @@ def robust_download(ticker, period="2y"):
         if df.index.tz is not None: df.index = df.index.tz_localize(None)
         return df
     except: return pd.DataFrame()
+
+class Market_List_Provider:
+    @staticmethod
+    def get_crypto_list():
+        # Top 50 Cryptos (Manual List for Stability)
+        return [
+            "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "DOGE-USD", "ADA-USD", "AVAX-USD", 
+            "TRX-USD", "DOT-USD", "LINK-USD", "MATIC-USD", "LTC-USD", "BCH-USD", "UNI-USD", "ATOM-USD",
+            "XLM-USD", "ETC-USD", "FIL-USD", "HBAR-USD", "APT-USD", "ARB-USD", "OP-USD", "NEAR-USD",
+            "VET-USD", "GRT-USD", "MKR-USD", "SNX-USD", "AAVE-USD", "ALGO-USD", "AXS-USD", "SAND-USD",
+            "EOS-USD", "XTZ-USD", "THETA-USD", "MANA-USD", "FTM-USD", "PEPE-USD", "SHIB-USD"
+        ]
+
+    @staticmethod
+    def get_scan_list(market_type):
+        if "TW" in market_type: return ["2330.TW", "2317.TW", "2454.TW", "2603.TW", "2382.TW", "6669.TW", "3035.TWO", "3037.TW", "2368.TW", "2881.TW", "2303.TW", "2412.TW", "1101.TW", "2882.TW", "2891.TW"]
+        elif "US" in market_type: return ["NVDA", "TSLA", "AAPL", "MSFT", "AMD", "GOOG", "AMZN", "META", "SMCI", "COIN", "MSTR", "PLTR", "INTC", "QCOM", "NFLX"]
+        elif "Crypto" in market_type: return Market_List_Provider.get_crypto_list()
+        return []
 
 # =============================================================================
 # 3. 物理引擎 (Causal)
@@ -149,7 +168,7 @@ class Causal_Physics_Engine:
         cdf = norm.cdf(delta_p / sigma)
         oi = (v * cdf - v * (1 - cdf)).abs()
         total_vol = v.rolling(20).sum() + 1e-9
-        df['VPIN'] = (oi.rolling(20).sum() / total_vol).fillna(0) # 強制補 0
+        df['VPIN'] = (oi.rolling(20).sum() / total_vol).fillna(0) 
         
         # 3. Technicals
         df['EMA20'] = c.ewm(span=20).mean()
@@ -162,7 +181,7 @@ class Causal_Physics_Engine:
         rs = gain / (loss + 1e-9)
         df['RSI'] = 100 - (100 / (1 + rs))
         
-        return df.fillna(method='bfill').fillna(0) # 最終防線
+        return df.fillna(method='bfill').fillna(0)
 
 # =============================================================================
 # 4. 外部數據與戰術層
@@ -172,14 +191,15 @@ class FinMind_Engine:
     @st.cache_data(ttl=3600)
     def get_tw_data(ticker):
         if ".TW" not in ticker and ".TWO" not in ticker: return None
-        USER_TOKEN = "" # Token
+        # 👇 請在這裡填入 Token
+        USER_TOKEN = "" 
         try:
             stock_id = ticker.split('.')[0]
             api = DataLoader()
             if USER_TOKEN: api.login_by_token(api_token=USER_TOKEN)
-            data = {"chips": 0, "pe": None, "growth": None}
-            # df = api.taiwan_stock_institutional_investors(...) # 實戰解開
-            return data
+            # data = {"chips": 0, "pe": None, "growth": None}
+            # df = api.taiwan_stock_institutional_investors(...) # 實戰請解開
+            return None # 暫時返回 None 以防無 Token 報錯
         except: return None
 
 class News_Intel_Engine:
@@ -253,10 +273,10 @@ class Universal_Analyst:
         
         # Value & Stability
         dna['Value'] = min(max(100 - last['RSI'], 0), 100)
-        dna['Stability'] = 50 # Default
+        dna['Stability'] = 50 
         
         avg_score = np.mean(list(dna.values()))
-        if pd.isna(avg_score): avg_score = 50 # 最終防線
+        if pd.isna(avg_score): avg_score = 50 
         
         fvgs = []
         news = []
@@ -328,7 +348,7 @@ class Sovereign_Backtester:
         return pd.DataFrame(equity), pd.DataFrame(trades), stats
 
 # =============================================================================
-# 7. UI Renderers (修復戰術網格)
+# 7. UI Renderers
 # =============================================================================
 def render_macro_oracle():
     st.markdown("### 🌍 Macro Oracle")
@@ -346,31 +366,45 @@ def render_macro_oracle():
 def render_quantum_scanner():
     st.markdown("### 🔭 Quantum Scanner")
     market = st.selectbox("Market", ["TW", "US", "Crypto"])
-    if "TW" in market: tickers = ["2330.TW", "2317.TW", "2454.TW", "2603.TW", "2382.TW", "6669.TW"]
-    elif "US" in market: tickers = ["NVDA", "TSLA", "AAPL", "MSFT", "AMD", "COIN"]
-    else: tickers = ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD"]
+    tickers = Market_List_Provider.get_scan_list(market)
     
-    if st.button("Scan"):
+    if st.button("🚀 Start Scan"):
         res_list = []
         bar = st.progress(0)
+        
         for i, t in enumerate(tickers):
-            r = Universal_Analyst.analyze(t, fast_mode=True)
-            if r: res_list.append({"Ticker": t, "Score": r['score'], "Sync": r['last']['Sync_Smooth']})
+            try:
+                r = Universal_Analyst.analyze(t, fast_mode=True)
+                if r: 
+                    res_list.append({
+                        "Ticker": t, 
+                        "Score": float(f"{r['score']:.1f}"), 
+                        "Sync": float(f"{r['last']['Sync_Smooth']:.2f}"),
+                        "RSI": float(f"{r['last']['RSI']:.0f}")
+                    })
+            except: pass
             bar.progress((i+1)/len(tickers))
+            
         if res_list:
             df = pd.DataFrame(res_list).sort_values("Score", ascending=False)
-            st.dataframe(df.style.background_gradient(subset=['Score'], cmap='RdYlGn'), use_container_width=True)
+            st.dataframe(
+                df.style.background_gradient(subset=['Score'], cmap='RdYlGn'),
+                use_container_width=True,
+                height=600
+            )
+        else:
+            st.warning("No data returned.")
 
 def render_sovereign_lab():
     st.markdown("### 🛡️ Sovereign Lab")
-    ticker = st.text_input("Ticker", "2330.TW")
+    ticker = st.text_input("Ticker", "BTC-USD")
     
     if st.button("Deep Analyze"):
-        with st.spinner("Analyzing..."):
+        with st.spinner("Analyzing Physics & DNA..."):
             res = Universal_Analyst.analyze(ticker, fast_mode=False)
             
         if res is None:
-            st.error("Data Error.")
+            st.error("Data Insufficient.")
             return
             
         # Layout
@@ -389,11 +423,11 @@ def render_sovereign_lab():
             <div class="signal-box" style="border-top: 4px solid {color}">
                 <div style="color:#aaa; font-size:14px">TACTICAL SIGNAL</div>
                 <div class="big-signal" style="color:{color}">{sig}</div>
-                <div>Score: {score:.0f} | Price: ${price:.2f}</div>
+                <div>Score: {score:.0f} | Price: ${price:,.2f}</div>
             </div>
             """, unsafe_allow_html=True)
             
-            # 2. 戰術數據網格 (Tactical Grid) - [RESTORED]
+            # 2. 戰術數據網格 (Tactical Grid) - [Fixed]
             atr = last['ATR']
             sl = price - (2.5 * atr)
             tp = price + (4.0 * atr)
@@ -456,7 +490,7 @@ def render_sovereign_lab():
 # 8. 主程序
 # =============================================================================
 def main():
-    st.sidebar.markdown("## 🛡️ MARCS V140 COMBAT")
+    st.sidebar.markdown("## 🛡️ MARCS V150 INFINITY")
     mode = st.sidebar.radio("MODE", ["🌍 Macro Oracle", "🔭 Quantum Scanner", "🛡️ Sovereign Lab"])
     
     if mode == "🌍 Macro Oracle": render_macro_oracle()
