@@ -1,829 +1,417 @@
-import sys
-import os
-import types
-
-# =============================================================================
-# 0. 系統補丁 (Fix for Python 3.12+ & pandas_datareader)
-# =============================================================================
-# 必須放在所有 import 之前，解決 distutils 被移除的問題
-try:
-    import distutils.version
-except ImportError:
-    if 'distutils' not in sys.modules:
-        sys.modules['distutils'] = types.ModuleType('distutils')
-    if 'distutils.version' not in sys.modules:
-        sys.modules['distutils.version'] = types.ModuleType('distutils.version')
-    
-    try:
-        from packaging.version import Version as LooseVersion
-    except ImportError:
-        class LooseVersion:
-            def __init__(self, vstring): self.vstring = vstring
-            def __ge__(self, other): return str(self.vstring) >= str(other.vstring)
-            def __lt__(self, other): return str(self.vstring) < str(other.vstring)
-
-    sys.modules['distutils.version'].LooseVersion = LooseVersion
-
-# =============================================================================
-# 正常 Import
-# =============================================================================
 import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-import requests
-import warnings
-import concurrent.futures
-import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
-import statsmodels.api as sm
-import pandas_datareader.data as web
-from FinMind.data import DataLoader
 import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+from scipy.signal import hilbert
+from scipy.stats import norm
+import warnings
+from datetime import datetime
 
-# 過濾警告
+# 兼容性處理 (Wasserstein Distance)
+try:
+    from scipy.stats import wasserstein_distance
+except ImportError:
+    def wasserstein_distance(u_values, v_values):
+        u_values = np.sort(u_values)
+        v_values = np.sort(v_values)
+        return np.mean(np.abs(u_values - v_values))
+
+# =============================================================================
+# 0. 系統核心配置 & CSS (The Skin)
+# =============================================================================
 warnings.filterwarnings('ignore')
-
-# =============================================================================
-# 1. 視覺核心 (星際戰神風格 + SMC 戰術面板)
-# =============================================================================
-st.set_page_config(page_title="MARCS V98 Ultimate", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="MARCS ULTIMATE", layout="wide", page_icon="⚛️")
 
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&family=Noto+Sans+TC:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&family=Roboto+Mono:wght@400;700&display=swap');
     
-    .stApp { background-color: #050505; font-family: 'Rajdhani', 'Noto Sans TC', sans-serif; }
+    /* Global Dark Theme */
+    .stApp { background-color: #050505; font-family: 'Rajdhani', sans-serif; color: #c9d1d9; }
     
-    /* 星空背景 */
-    .stApp::before {
-        content: ""; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-        background-image: 
-            radial-gradient(white, rgba(255,255,255,.2) 2px, transparent 3px),
-            radial-gradient(white, rgba(255,255,255,.15) 1px, transparent 2px);
-        background-size: 550px 550px, 350px 350px;
-        animation: stars 120s linear infinite; z-index: -1; opacity: 0.7;
-    }
-    @keyframes stars { from {transform: translateY(0);} to {transform: translateY(-1000px);} }
-
-    /* 風險儀表板 */
-    .risk-container {
-        background: rgba(30, 30, 35, 0.6); border: 1px solid #333; padding: 15px 20px;
-        border-radius: 10px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;
-        backdrop-filter: blur(10px);
-    }
-    .risk-val { font-family: 'JetBrains Mono'; font-size: 32px; font-weight: bold; text-shadow: 0 0 10px rgba(255,255,255,0.2); }
-    .risk-label { font-size: 12px; color: #888; text-transform: uppercase; }
-    
-    /* [V96] 戰術數據卡 (Tactical Card) */
-    .tac-card {
-        background: rgba(26, 26, 26, 0.8); border: 1px solid #444; border-radius: 6px; padding: 10px;
-        margin-bottom: 5px; display: flex; justify-content: space-between; align-items: center;
-        backdrop-filter: blur(5px);
-    }
-    .tac-label { font-size: 12px; color: #aaa; font-family: 'Rajdhani'; font-weight: bold; }
-    .tac-val { font-family: 'JetBrains Mono'; font-size: 18px; font-weight: bold; color: #fff; }
-    .tac-sub { font-size: 10px; color: #666; margin-left: 5px; }
-
-    /* 卡片與表格 */
+    /* Bento Grid Card */
     .metric-card {
-        background: rgba(18, 18, 22, 0.85); backdrop-filter: blur(12px);
-        border-left: 4px solid #ffae00; border-radius: 8px; padding: 15px; margin-bottom: 10px;
-        transition: transform 0.2s;
+        background-color: #161b22; border: 1px solid #30363d; border-radius: 8px;
+        padding: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); margin-bottom: 10px;
     }
-    .metric-card:hover { transform: translateY(-3px); border-left-color: #ffd700; }
+    .metric-label { color: #8b949e; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; font-family: 'Roboto Mono'; }
+    .metric-value { color: #e6edf3; font-size: 24px; font-weight: 700; margin: 4px 0; }
+    .metric-sub { font-size: 11px; font-family: 'Roboto Mono'; }
     
-    .highlight-val { font-size: 24px; font-weight: bold; color: #fff; font-family: 'JetBrains Mono'; }
-    .highlight-lbl { font-size: 12px; color: #8b949e; letter-spacing: 1px; text-transform: uppercase;}
-    .smart-text { font-size: 14px; color: #ffb86c; font-weight: bold; margin-top: 5px; }
+    /* Custom Tags */
+    .tag-physics { background: rgba(210, 168, 255, 0.15); color: #d2a8ff; padding: 2px 6px; border-radius: 4px; font-size: 10px; border: 1px solid rgba(210, 168, 255, 0.3); }
+    .tag-macro { background: rgba(56, 139, 253, 0.15); color: #58a6ff; padding: 2px 6px; border-radius: 4px; font-size: 10px; border: 1px solid rgba(56, 139, 253, 0.3); }
     
-    .verdict-box { padding: 20px; border-radius: 10px; text-align: center; margin-bottom: 20px; box-shadow: 0 0 15px rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.1); }
-    
-    .chip-tag { padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-left: 10px; font-family: 'Noto Sans TC'; vertical-align: middle; }
-    
-    .news-card { background: rgba(25,25,30,0.8); border-bottom: 1px solid #444; padding: 10px; transition: 0.2s; border-radius: 5px; }
-    .news-card:hover { background: rgba(40,40,50,0.9); }
-    .news-title { color: #e0e0e0; text-decoration: none; font-weight: bold; font-size: 14px; }
-    
-    .stButton>button { width: 100%; border-radius: 6px; font-weight: bold; border:none; background: linear-gradient(90deg, #333 0%, #ffae00 100%); color: white; }
-    
-    div[data-testid="stImage"] { background: transparent; }
+    /* Colors */
+    .c-green { color: #3fb950; } .c-red { color: #f85149; } .c-gold { color: #d29922; } .c-purple { color: #d2a8ff; }
 </style>
 """, unsafe_allow_html=True)
 
+# 工具函式
+def smart_format(value, is_currency=True):
+    if value is None or pd.isna(value): return "N/A"
+    val = float(value)
+    prefix = "$" if is_currency else ""
+    if abs(val) < 1 and abs(val) > 0: return f"{prefix}{val:.4f}"
+    return f"{prefix}{val:,.2f}"
+
 # =============================================================================
-# 2. 數據獲取層
+# 1. 物理引擎核心 (V40 Physics Engine)
 # =============================================================================
-@st.cache_data(ttl=3600)  
-def robust_download(ticker, period="1y"):
-    try:
-        stock = yf.Ticker(ticker)
-        df = stock.history(period=period)
+class Physics_Engine:
+    """計算 Hilbert Transform, Hurst, VPIN, Chaos"""
+    
+    @staticmethod
+    def calc_metrics(df):
+        if df.empty or len(df) < 50: return df
+        df = df.copy()
         
-        if df.empty or len(df) == 0:
-            df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
+        c = df['Close'].values
+        v = df['Volume'].values
         
-        if isinstance(df.columns, pd.MultiIndex):
-            try: df.columns = df.columns.get_level_values(0)
-            except: pass
+        # 1. Hilbert Transform (Phase Sync)
+        # 去除趨勢 (Detrend)
+        ema = pd.Series(c).ewm(span=20).mean()
+        detrended_c = c - ema
+        detrended_v = v - pd.Series(v).rolling(20).mean()
         
-        if 'Close' not in df.columns and 'Adj Close' in df.columns:
-            df['Close'] = df['Adj Close']
-            
-        if not df.empty and 'Close' in df.columns and len(df) > 0:
-            df.index = pd.to_datetime(df.index).tz_localize(None) 
-            if df['Close'].iloc[-1] > 0:
-                return df
-    except Exception as e:
-        print(f"Download Error for {ticker}: {e}")
-    return pd.DataFrame()
-
-class Global_Market_Loader:
-    @staticmethod
-    def get_scan_list(market_type):
-        if "台股" in market_type: return ["2330.TW", "2317.TW", "2454.TW", "2603.TW", "2382.TW", "6669.TW", "3035.TWO", "3037.TW", "2368.TW", "2881.TW", "2609.TW", "2615.TW"]
-        elif "美股" in market_type: return ["NVDA", "TSLA", "AAPL", "MSFT", "AMD", "GOOG", "AMZN", "META", "SMCI", "COIN", "MSTR", "PLTR"]
-        elif "加密" in market_type: return ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD"]
-        return []
-
-# =============================================================================
-# 3. SMC 引擎
-# =============================================================================
-class SMC_Engine:
-    @staticmethod
-    def identify_fvg(df, lookback=60):
-        fvgs = []
-        try:
-            start_idx = max(len(df) - lookback, 2)
-            for i in range(len(df)-2, start_idx, -1):
-                if df['Low'].iloc[i] > df['High'].iloc[i-2]: # Bull
-                    top = df['Low'].iloc[i]; bottom = df['High'].iloc[i-2]
-                    is_mitigated = False
-                    for j in range(i+1, len(df)):
-                        if df['Low'].iloc[j] < bottom: is_mitigated = True; break
-                    if not is_mitigated: fvgs.append({'type': 'Bull', 'top': top, 'bottom': bottom, 'idx': df.index[i-2]})
-
-                elif df['High'].iloc[i] < df['Low'].iloc[i-2]: # Bear
-                    top = df['Low'].iloc[i-2]; bottom = df['High'].iloc[i]
-                    is_mitigated = False
-                    for j in range(i+1, len(df)):
-                        if df['High'].iloc[j] > top: is_mitigated = True; break
-                    if not is_mitigated: fvgs.append({'type': 'Bear', 'top': top, 'bottom': bottom, 'idx': df.index[i-2]})
-            return fvgs[:3]
-        except Exception: return []
-
-# =============================================================================
-# 4. 六因子模型引擎
-# =============================================================================
-class SixFactor_Engine:
-    @staticmethod
-    @st.cache_data(ttl=86400)
-    def get_ff_factors(start_date):
-        """下載 Fama-French 5因子 + Momentum"""
-        try:
-            ff5 = web.DataReader('F-F_Research_Data_5_Factors_2x3_daily', 'famafrench', start=start_date)[0]
-            mom = web.DataReader('F-F_Momentum_Factor_daily', 'famafrench', start=start_date)[0]
-            factors = pd.concat([ff5, mom], axis=1).dropna()
-            factors = factors / 100.0
-            factors.rename(columns={'Mkt-RF': 'Mkt_RF', 'Mom   ': 'MOM'}, inplace=True)
-            return factors
-        except Exception as e:
-            print(f"F-F Data Error: {e}")
-            return pd.DataFrame()
+        # 填充 NaN
+        detrended_c = detrended_c.fillna(0).values
+        detrended_v = detrended_v.fillna(0).values
+        
+        # 計算相位
+        analytic_c = hilbert(detrended_c)
+        analytic_v = hilbert(detrended_v)
+        phase_c = np.angle(analytic_c)
+        phase_v = np.angle(analytic_v)
+        
+        # Sync: 1 = 共振, -1 = 背離
+        df['Sync'] = np.cos(phase_c - phase_v)
+        df['Sync_Smooth'] = df['Sync'].rolling(5).mean()
+        
+        # 2. VPIN Proxy (Order Flow Toxicity)
+        delta_p = np.diff(c, prepend=c[0])
+        sigma = np.std(delta_p) + 1e-9
+        cdf = norm.cdf(delta_p / sigma)
+        buy_vol = v * cdf
+        sell_vol = v * (1 - cdf)
+        oi = np.abs(buy_vol - sell_vol)
+        df['VPIN'] = pd.Series(oi).rolling(20).sum() / (pd.Series(v).rolling(20).sum() + 1e-9)
+        
+        # 3. Chaos (Wasserstein)
+        log_ret = np.log(df['Close']).diff().fillna(0)
+        # 滾動計算 Chaos (比較 t與t-1的分布)
+        chaos_list = [0]*40
+        for i in range(40, len(df)):
+            w2 = wasserstein_distance(log_ret[i-20:i], log_ret[i-40:i-20])
+            chaos_list.append(w2 * 1000) # Scale up
+        df['Chaos'] = pd.Series(chaos_list, index=df.index).fillna(0)
+        
+        # 4. Technicals (ATR/RSI) for Risk Mgmt
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / (loss + 1e-9)
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        return df
 
     @staticmethod
-    def analyze_exposure(ticker_df, ticker_symbol):
-        try:
-            if ticker_df.empty or len(ticker_df) < 60: return None
-            start_date = ticker_df.index[0]
-            factors = SixFactor_Engine.get_ff_factors(start_date)
-            if factors.empty: return None
+    def get_signal_score(row):
+        """用於掃描器的快速評分"""
+        score = 50
+        # 物理共振加分
+        if row['Sync_Smooth'] > 0.5: score += 25
+        if row['Sync_Smooth'] < -0.5: score -= 15
+        
+        # 籌碼安定加分
+        if row['VPIN'] < 0.3: score += 10
+        if row['VPIN'] > 0.6: score -= 20
+        
+        # 動能加分
+        if row['RSI'] > 50 and row['RSI'] < 80: score += 15
+        
+        return min(max(score, 0), 100)
+
+# =============================================================================
+# 2. 宏觀模組 (V100 Macro Oracle)
+# =============================================================================
+class Macro_Brain:
+    INDICES = {
+        "RISK": ["^NDX", "^SOX", "BTC-USD", "^TWII"],
+        "SAFE": ["TLT", "GLD", "DX-Y.NYB"],
+        "SENTIMENT": ["^VIX"]
+    }
+    ALL_TICKERS = [t for cat in INDICES.values() for t in cat]
+
+    @staticmethod
+    @st.cache_data(ttl=3600) # 緩存1小時
+    def fetch_macro_data():
+        df = yf.download(Macro_Brain.ALL_TICKERS, period="6mo", progress=False)
+        return df
+
+    @staticmethod
+    def analyze_macro(df):
+        metrics = {}
+        df = df.ffill().bfill()
+        # 相關性矩陣
+        corr = df['Close'].pct_change().tail(60).corr()
+        
+        for ticker in df['Close'].columns:
+            close = df['Close'][ticker]
+            # 簡單物理計算
+            log_ret = np.log(close).diff().dropna()
+            w2 = wasserstein_distance(log_ret.tail(20), log_ret.iloc[-40:-20])
+            chaos = w2 * 1000
             
-            combined = pd.concat([ticker_df['Close'].pct_change().dropna(), factors], axis=1, join='inner').dropna()
-            if len(combined) < 30: return None
+            ma50 = close.rolling(50).mean().iloc[-1]
+            trend = (close.iloc[-1] - ma50) / ma50
             
-            y = combined['Close'] - combined['RF']
-            X = combined[['Mkt_RF', 'SMB', 'HML', 'RMW', 'CMA', 'MOM']]
-            X = sm.add_constant(X)
-            
-            model = sm.OLS(y, X).fit()
-            betas = model.params
-            pvalues = model.pvalues
-            rsquared = model.rsquared
-            
-            analysis = {
-                'Beta_Mkt': {'val': betas['Mkt_RF'], 'sig': pvalues['Mkt_RF'] < 0.05, 'desc': '市場連動性'},
-                'Beta_SMB': {'val': betas['SMB'], 'sig': pvalues['SMB'] < 0.05, 'desc': '規模 (Size)'}, 
-                'Beta_HML': {'val': betas['HML'], 'sig': pvalues['HML'] < 0.05, 'desc': '價值 (Value)'}, 
-                'Beta_RMW': {'val': betas['RMW'], 'sig': pvalues['RMW'] < 0.05, 'desc': '獲利 (Profit)'}, 
-                'Beta_CMA': {'val': betas['CMA'], 'sig': pvalues['CMA'] < 0.05, 'desc': '投資 (Inv)'},    
-                'Beta_MOM': {'val': betas['MOM'], 'sig': pvalues['MOM'] < 0.05, 'desc': '動能 (Mom)'},    
-                'R2': rsquared
+            metrics[ticker] = {
+                "Price": close.iloc[-1],
+                "Trend%": trend * 100,
+                "Chaos": chaos
             }
-            return analysis
-        except Exception as e:
-            print(f"6-Factor Analysis Error: {e}")
-            return None
+            
+        # 判斷體制
+        ndx = metrics.get('^NDX', {}).get('Trend%', 0)
+        tlt = metrics.get('TLT', {}).get('Trend%', 0)
+        vix = metrics.get('^VIX', {}).get('Price', 20)
+        
+        regime = "NEUTRAL"
+        color = "#8b949e"
+        if ndx > 0 and tlt > -2: regime, color = "GOLDILOCKS (舒適)", "#3fb950"
+        elif ndx < 0 and tlt > 0 and vix > 25: regime, color = "RECESSION (衰退)", "#f85149"
+        elif ndx < 0 and tlt < -2: regime, color = "INFLATION (通膨)", "#d2a8ff"
+        
+        # 計算總分
+        score = 50
+        if metrics.get('^VIX',{}).get('Price',20) < 20: score += 10
+        if metrics.get('^NDX',{}).get('Trend%',0) > 0: score += 10
+        if metrics.get('DX-Y.NYB',{}).get('Trend%',0) < 0: score += 10
+        
+        return metrics, corr, regime, color, score
 
 # =============================================================================
-# 5. FinMind & Valuation (UPGRADED)
+# 3. 回測與策略模組 (V90 + V40 Fusion)
 # =============================================================================
-class FinMind_Engine:
-    @staticmethod
-    @st.cache_data(ttl=3600)
-    def get_tw_data(ticker):
-        if ".TW" not in ticker and ".TWO" not in ticker: 
-            return None
+class Unified_Backtester:
+    def __init__(self, ticker, capital, fee_rate, tax_rate, use_physics=True):
+        self.ticker = ticker
+        self.capital = capital
+        self.fee_rate = fee_rate
+        self.tax_rate = tax_rate
+        self.use_physics = use_physics
+
+    def run(self):
+        # 下載數據 (Physics 需要連續數據，推薦 1h，但日線也可以跑)
+        df = yf.download(self.ticker, period="1y", interval="1h", progress=False, auto_adjust=True)
+        if df.empty: 
+            # Fallback to Daily if 1h fails (e.g. non-US stocks often fail on 1h)
+            df = yf.download(self.ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
+            
+        if df.empty: return None, None, None
+
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
-        # ---------------------------------------------------------
-        # 👇 請在這裡貼上您的 Token (如果沒有就留空字串 "")
-        # ---------------------------------------------------------
-        USER_TOKEN = ""  
-        # ---------------------------------------------------------
-
-        stock_id = ticker.split('.')[0]
-        api = DataLoader()
+        # 計算物理指標
+        df = Physics_Engine.calc_metrics(df)
+        df = df.dropna()
         
-        if USER_TOKEN:
-            api.login_by_token(api_token=USER_TOKEN)
-
-        start_date = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
+        # 初始化回測變數
+        cash = self.capital
+        position = 0
+        trades = []
+        equity_curve = []
         
-        data_pack = {
-            "chips": 0,
-            "pe": None,
-            "growth": None,
-            "price": 0
-        }
+        # 基準 (Buy & Hold)
+        start_price = df['Close'].iloc[0]
+        bh_shares = self.capital // start_price
         
-        try:
-            # 1. 外資籌碼
-            df_chips = api.taiwan_stock_institutional_investors(stock_id=stock_id, start_date=start_date)
-            if not df_chips.empty:
-                f = df_chips[df_chips['name'] == 'Foreign_Investor']
-                if not f.empty:
-                    latest = f.iloc[-1]
-                    data_pack['chips'] = int((latest['buy'] - latest['sell']) / 1000)
+        total_fees = 0
 
-            # 2. 本益比 (PER)
-            df_per = api.taiwan_stock_per_pbr(stock_id=stock_id, start_date=start_date)
-            if not df_per.empty:
-                latest_pe = df_per.iloc[-1]['PER']
-                if latest_pe > 0: data_pack['pe'] = latest_pe
+        for i in range(len(df)):
+            date = df.index[i]
+            price = df['Close'].iloc[i]
+            sync = df['Sync_Smooth'].iloc[i]
+            vpin = df['VPIN'].iloc[i]
+            
+            # --- 策略核心 (Physics Fusion) ---
+            # 進場: 能量共振 (Sync > 0.5) & 籌碼安定 (VPIN < 0.5)
+            buy_signal = (sync > 0.5) and (vpin < 0.5)
+            
+            # 出場: 能量背離 (Sync < 0) 或 籌碼劇毒 (VPIN > 0.7)
+            sell_signal = (sync < -0.2) or (vpin > 0.7)
+            
+            # 執行交易
+            if position > 0 and sell_signal:
+                gross = position * price
+                fee = gross * self.fee_rate
+                tax = gross * self.tax_rate
+                cash += (gross - fee - tax)
+                total_fees += (fee + tax)
+                trades.append({'Date': date, 'Type': 'SELL', 'Price': price, 'Reason': 'Physics Exit'})
+                position = 0
+            
+            elif position == 0 and buy_signal:
+                cost = cash * 0.98 # Buffer
+                fee = cost * self.fee_rate
+                shares = (cost - fee) // price
+                if shares > 0:
+                    cash -= (shares * price + fee)
+                    total_fees += fee
+                    position = shares
+                    trades.append({'Date': date, 'Type': 'BUY', 'Price': price})
 
-            # 3. 月營收成長率
-            rev_start = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-            df_rev = api.taiwan_stock_month_revenue(stock_id=stock_id, start_date=rev_start)
-            if not df_rev.empty:
-                latest_growth = df_rev.iloc[-1]['revenue_year_growth']
-                if latest_growth is not None:
-                    data_pack['growth'] = latest_growth / 100.0
+            # 計算淨值
+            strat_val = cash + (position * price)
+            bh_val = bh_shares * price # 簡單對照
+            
+            equity_curve.append({'Date': date, 'Strategy': strat_val, 'BuyHold': bh_val})
+            
+        return pd.DataFrame(equity_curve), pd.DataFrame(trades), df
 
-            return data_pack
-        except Exception as e:
-            print(f"FinMind Error: {e}")
-            return None
+# =============================================================================
+# 4. 介面渲染函式 (UI Renderers)
+# =============================================================================
 
-class PEG_Valuation_Engine:
-    @staticmethod
-    def calculate(ticker, sentiment_score=0):
-        try:
-            # --- 分支 A: 台股模式 (FinMind) ---
-            if ".TW" in ticker:
-                fm_data = FinMind_Engine.get_tw_data(ticker)
-                stock = yf.Ticker(ticker)
-                try: price = stock.history(period="1d")['Close'].iloc[-1]
-                except: price = 0
-                
-                if fm_data and price > 0:
-                    pe = fm_data['pe']
-                    growth = fm_data['growth']
-                    if not pe: pe = stock.info.get('trailingPE')
+def render_macro_oracle():
+    st.markdown("### 🌍 MACRO ORACLE (宏觀預言機)")
+    
+    with st.spinner("Connecting to Global Markets..."):
+        df = Macro_Brain.fetch_macro_data()
+        if df.empty: st.error("Data connection failed."); return
+        
+        metrics, corr, regime, reg_color, score = Macro_Brain.analyze_macro(df)
+        
+        # Top Metrics
+        c1, c2, c3, c4 = st.columns(4)
+        c1.markdown(f"<div class='metric-card'><div class='metric-label'>MACRO SCORE</div><div class='metric-value'>{score}</div><div class='metric-sub'>Risk Appetite</div></div>", unsafe_allow_html=True)
+        c2.markdown(f"<div class='metric-card'><div class='metric-label'>REGIME</div><div style='font-size:20px; font-weight:bold; color:{reg_color}'>{regime}</div><div class='metric-sub'>Current State</div></div>", unsafe_allow_html=True)
+        c3.markdown(f"<div class='metric-card'><div class='metric-label'>VIX</div><div class='metric-value'>{metrics['^VIX']['Price']:.2f}</div><div class='metric-sub'>Fear Index</div></div>", unsafe_allow_html=True)
+        c4.markdown(f"<div class='metric-card'><div class='metric-label'>LIQUIDITY (TLT)</div><div class='metric-value' style='color:{'#3fb950' if metrics['TLT']['Trend%']>0 else '#f85149'}'>{metrics['TLT']['Trend%']:+.1f}%</div><div class='metric-sub'>Bond Trend</div></div>", unsafe_allow_html=True)
+
+        # Correlation Matrix
+        st.markdown("#### 🔗 Global Correlation Heatmap (60D)")
+        fig_corr = px.imshow(corr, text_auto=True, color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto")
+        fig_corr.update_layout(paper_bgcolor="#050505", plot_bgcolor="#050505", height=400)
+        st.plotly_chart(fig_corr, use_container_width=True)
+
+def render_market_scanner():
+    st.markdown("### 🔭 QUANTUM SCANNER (物理掃描器)")
+    
+    default_list = "BTC-USD, ETH-USD, SOL-USD, NVDA, TSLA, AAPL, COIN, MSTR"
+    user_input = st.text_area("Watchlist (Comma Separated)", default_list)
+    tickers = [x.strip() for x in user_input.split(",")]
+    
+    if st.button("🚀 INITIATE SCAN", type="primary"):
+        results = []
+        progress_bar = st.progress(0)
+        
+        for i, t in enumerate(tickers):
+            try:
+                # 掃描模式用日線即可，速度較快
+                df = yf.download(t, period="6mo", progress=False, auto_adjust=True)
+                if not df.empty:
+                    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+                    df = Physics_Engine.calc_metrics(df)
+                    row = df.iloc[-1]
+                    score = Physics_Engine.get_signal_score(row)
                     
-                    if pe and growth:
-                        peg = pe / (growth * 100)
-                        if peg <= 0: peg = 99 
-                        
-                        target_peg = peg * (1 + (sentiment_score * 0.2))
-                        fair_pe = (growth * 100) * 1.0 
-                        fair_price = (price / pe) * fair_pe * (1 + sentiment_score * 0.1)
-                        
-                        return {
-                            "fair": fair_price, 
-                            "scenarios": {"Bear": fair_price * 0.85, "Bull": fair_price * 1.15}, 
-                            "method": "FinMind PEG (TW)", 
-                            "peg_used": round(peg, 2), 
-                            "sentiment_impact": f"{sentiment_score*20:+.0f}%"
-                        }
+                    if score > 0:
+                        results.append({
+                            "Ticker": t,
+                            "Price": row['Close'],
+                            "Score": score,
+                            "Sync": row['Sync_Smooth'],
+                            "VPIN": row['VPIN'],
+                            "RSI": row['RSI']
+                        })
+            except: pass
+            progress_bar.progress((i+1)/len(tickers))
+            
+        if results:
+            res_df = pd.DataFrame(results).sort_values("Score", ascending=False)
+            st.dataframe(
+                res_df.style.background_gradient(subset=['Score'], cmap='Greens')
+                      .format({'Price': "{:.2f}", 'Sync': "{:.2f}", 'VPIN': "{:.2f}", 'RSI': "{:.0f}"}),
+                use_container_width=True
+            )
+        else:
+            st.info("No tickers found or data error.")
 
-            # --- 分支 B: 美股/通用模式 (YF) ---
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            price = info.get('currentPrice', 0) or info.get('regularMarketPrice', 0)
-            if price == 0: return None
+def render_strategy_lab():
+    st.markdown("### 🧪 PHYSICS LAB (深度策略實驗室)")
+    
+    c1, c2, c3 = st.columns([1, 1, 1])
+    ticker = c1.text_input("Target Ticker", "BTC-USD")
+    capital = c2.number_input("Capital", 10000)
+    fee = c3.number_input("Fee Rate", 0.001, format="%.4f")
+    
+    if st.button("🔬 RUN SIMULATION", type="primary"):
+        with st.spinner("Running Physics Simulation (Hilbert/Hurst)..."):
+            ub = Unified_Backtester(ticker, capital, fee, 0.0) # Tax設為0簡化，可自行添加
+            df_eq, df_tr, df_raw = ub.run()
             
-            pe = info.get('trailingPE', None)
-            growth = info.get('earningsGrowth', None) or info.get('revenueGrowth', None)
-
-            # [安全網]
-            if not pe or not growth: 
-                return {
-                    "fair": price, 
-                    "scenarios": {"Bear": price * 0.9, "Bull": price * 1.1},
-                    "method": "Price Only (No Data)", 
-                    "peg_used": 0, 
-                    "sentiment_impact": "0%"
-                }
+            if df_eq is None: st.error("Simulation Failed."); return
             
-            peg = pe / (growth * 100)
-            target_peg = peg * (1 + (sentiment_score * 0.2))
-            fair_pe = (growth * 100) * 1.0 
-            fair_price = (price / pe) * fair_pe * (1 + sentiment_score * 0.1)
-
-            return {
-                "fair": fair_price, 
-                "scenarios": {"Bear": fair_price * 0.85, "Bull": fair_price * 1.15}, 
-                "method": "PEG Adjusted (YF)", 
-                "peg_used": round(target_peg, 2), 
-                "sentiment_impact": f"{sentiment_score*20:+.0f}%"
-            }
-        except Exception as e:
-            print(f"Valuation Error: {e}")
-            return None
-
-# =============================================================================
-# 6. 核心分析引擎
-# =============================================================================
-class Micro_Engine_Pro:
-    @staticmethod
-    def analyze(ticker):
-        df = robust_download(ticker, "1y")
-        if df.empty or len(df) < 30: 
-            return 50, ["數據不足"], df, 0, None, 0, 0, [], None
-        
-        try:
-            c = df['Close']; v = df['Volume']
-            score = 50; signals = []
+            # 1. 績效總結
+            final_ret = (df_eq['Strategy'].iloc[-1] - capital) / capital * 100
+            bh_ret = (df_eq['BuyHold'].iloc[-1] - capital) / capital * 100
             
-            # 1. Elder Logic
-            ema22 = c.ewm(span=22).mean()
-            if c.iloc[-1] > ema22.iloc[-1]: score += 10
+            m1, m2, m3, m4 = st.columns(4)
+            m1.markdown(f"<div class='metric-card'><div class='metric-label'>NET RETURN</div><div class='metric-value' style='color:{'#3fb950' if final_ret>0 else '#f85149'}'>{final_ret:+.2f}%</div></div>", unsafe_allow_html=True)
+            m2.markdown(f"<div class='metric-card'><div class='metric-label'>ALPHA vs HOLD</div><div class='metric-value' style='color:#d2a8ff'>{(final_ret - bh_ret):+.2f}%</div></div>", unsafe_allow_html=True)
+            m3.markdown(f"<div class='metric-card'><div class='metric-label'>TRADES</div><div class='metric-value'>{len(df_tr)}</div></div>", unsafe_allow_html=True)
+            m4.markdown(f"<div class='metric-card'><div class='metric-label'>LAST SYNC</div><div class='metric-value'>{df_raw['Sync_Smooth'].iloc[-1]:.2f}</div></div>", unsafe_allow_html=True)
             
-            ema12 = c.ewm(span=12).mean(); ema26 = c.ewm(span=26).mean(); macd = ema12 - ema26
-            hist = macd - macd.ewm(span=9).mean()
-            fi = c.diff() * v
-            fi_13 = fi.ewm(span=13).mean()
+            # 2. 雙圖表 (Price + Physics)
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
             
-            if (ema22.iloc[-1] > ema22.iloc[-2]) and (hist.iloc[-1] > hist.iloc[-2]): 
-                score += 20; signals.append("Elder Impulse Bull")
-            elif (ema22.iloc[-1] < ema22.iloc[-2]) and (hist.iloc[-1] < hist.iloc[-2]):
-                score -= 20; signals.append("Elder Impulse Bear")
-                
-            if fi_13.iloc[-1] > 0: score += 10
+            # Price
+            fig.add_trace(go.Scatter(x=df_raw.index, y=df_raw['Close'], name='Price', line=dict(color='#8b949e', width=1)), row=1, col=1)
+            # Buy/Sell Signals
+            if not df_tr.empty:
+                buys = df_tr[df_tr['Type']=='BUY']
+                sells = df_tr[df_tr['Type']=='SELL']
+                fig.add_trace(go.Scatter(x=buys['Date'], y=buys['Price'], mode='markers', marker=dict(symbol='triangle-up', size=10, color='#00f2ff'), name='Buy'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=sells['Date'], y=sells['Price'], mode='markers', marker=dict(symbol='triangle-down', size=10, color='#f85149'), name='Sell'), row=1, col=1)
             
-            # 2. SMC Logic
-            fvgs = SMC_Engine.identify_fvg(df)
-            current_price = c.iloc[-1]
-            in_bull_fvg = any(f['bottom'] <= current_price <= f['top'] and f['type']=='Bull' for f in fvgs)
-            in_bear_fvg = any(f['bottom'] <= current_price <= f['top'] and f['type']=='Bear' for f in fvgs)
+            # Physics (Sync)
+            fig.add_trace(go.Scatter(x=df_raw.index, y=df_raw['Sync_Smooth'], name='Phase Sync', line=dict(color='#d2a8ff', width=2)), row=2, col=1)
+            fig.add_hrect(y0=0.5, y1=1.0, row=2, col=1, fillcolor="#d2a8ff", opacity=0.1, line_width=0)
+            fig.add_hline(y=0, row=2, col=1, line_dash="dot", line_color="#333")
             
-            if in_bull_fvg: score += 15; signals.append("Testing Bullish FVG")
-            if in_bear_fvg: score -= 15; signals.append("Testing Bearish FVG")
-            
-            # 3. Chips (Hybrid)
-            chips = None
-            if ".TW" in ticker:
-                fm_data = FinMind_Engine.get_tw_data(ticker)
-                if fm_data and fm_data['chips'] != 0:
-                    chips = {'latest': fm_data['chips']}
-                    if chips['latest'] > 1000: score += 15
-                    elif chips['latest'] < -1000: score -= 15
-            
-            atr = (df['High']-df['Low']).rolling(14).mean().iloc[-1]
-            df['EMA22'] = ema22; df['MACD_Hist'] = hist; df['Force'] = fi_13
-            
-            # 4. Run 6-Factor Model
-            ff_analysis = SixFactor_Engine.analyze_exposure(df, ticker)
-            if ff_analysis:
-                if ff_analysis['Beta_RMW']['val'] > 0 and ff_analysis['Beta_RMW']['sig']: score += 5
-                if ff_analysis['Beta_MOM']['val'] > 0 and ff_analysis['Beta_MOM']['sig']: score += 5
-            
-            return score, signals, df, atr, chips, current_price, score, fvgs, ff_analysis
-        except Exception as e: 
-            print(f"Analyze Error: {e}")
-            return 50, ["計算錯誤"], df, 0, None, 0, 0, [], None
-
-class Scanner_Engine_Elder:
-    @staticmethod
-    def analyze_single(ticker):
-        try:
-            df = robust_download(ticker, "6mo")
-            if df.empty or len(df) < 50: return None
-            c = df['Close']; ema22 = c.ewm(span=22).mean()
-            score = 60
-            if c.iloc[-1] > ema22.iloc[-1]: score += 20
-            else: score -= 20
-            return {"ticker": ticker, "price": c.iloc[-1], "score": score, "sl": ema22.iloc[-1]*0.98}
-        except: return None
+            fig.update_layout(template="plotly_dark", height=600, paper_bgcolor="#050505", plot_bgcolor="#050505")
+            st.plotly_chart(fig, use_container_width=True)
 
 # =============================================================================
-# 7. 其他輔助與 UI (Macro Regime & Radar)
-# =============================================================================
-class Macro_Risk_Engine:
-    @staticmethod
-    @st.cache_data(ttl=3600)
-    def calculate_market_regime():
-        try:
-            tickers = ["^VIX", "^TNX", "^IRX", "DX-Y.NYB"]
-            df = yf.download(tickers, period="5d", progress=False)['Close']
-            
-            # 安全取值
-            def get_val(symbol):
-                return df[symbol].iloc[-1] if symbol in df.columns else 0
-            
-            vix = get_val('^VIX')
-            us10y = get_val('^TNX')
-            dxy = get_val('DX-Y.NYB')
-            
-            regime = "Normal"
-            color = "gray"
-            
-            if vix > 25: 
-                regime = "High Fear (避險模式)"
-                color = "#f44336" 
-            elif dxy > 105 and us10y > 4.5:
-                regime = "Liquidity Tight (資金緊縮)"
-                color = "#ff9800" 
-            elif vix < 15 and us10y < 4.0:
-                regime = "Goldilocks (金髮女孩-看多)"
-                color = "#4caf50" 
-            
-            return {
-                "score": int(max(0, 100 - (vix * 2))),
-                "regime": regime,
-                "color": color,
-                "data": {"VIX": vix, "US10Y": us10y, "DXY": dxy}
-            }
-        except Exception as e:
-            print(f"Macro Error: {e}")
-            return {"score": 50, "regime": "Data Error", "color": "gray", "data": {"VIX": 0, "US10Y": 0, "DXY": 0}}
-
-class News_Intel_Engine:
-    @staticmethod
-    @st.cache_data(ttl=3600)
-    def fetch_news(ticker):
-        items = []; sentiment_score = 0
-        try:
-            query = ticker.split('.')[0]
-            if ".TW" in ticker: 
-                query += " (營收 OR 法說 OR 外資) when:7d"
-                lang = "hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-            else: 
-                query += " stock finance when:7d"
-                lang = "hl=en-US&gl=US&ceid=US:en"
-            
-            url = f"https://news.google.com/rss/search?q={query}&{lang}"
-            resp = requests.get(url, timeout=3)
-            if resp.status_code == 200:
-                root = ET.fromstring(resp.content)
-                for item in root.findall('.//item')[:4]:
-                    title = item.find('title').text
-                    if any(x in title for x in ["影片","直播"]): continue
-                    link = item.find('link').text
-                    pubDate = item.find('pubDate')
-                    date = pubDate.text[5:16] if pubDate is not None else "Recent"
-                    sent = "neu"; s_val = 0
-                    if any(x in title for x in ["漲","高","Bull","優於","新高","Surge"]): sent="pos"; s_val=1
-                    elif any(x in title for x in ["跌","低","Bear","不如","重挫","Drop"]): sent="neg"; s_val=-1
-                    items.append({"title": title, "link": link, "date": date, "sent": sent})
-                    sentiment_score += s_val
-            
-            final_sent = max(-1, min(1, sentiment_score / 3))
-            return items, final_sent
-        except: return [], 0
-
-class Risk_Manager:
-    @staticmethod
-    def calculate(capital, price, sl, ticker, hybrid):
-        default = {"cap": 0, "pct": 0.0}
-        if price <= 0: return 0, default
-        try:
-            risk_amount = capital * 0.02
-            dist = price - sl
-            if dist <= 0: return 0, default 
-            
-            conf = max(0.2, hybrid / 100.0) 
-            size = int((risk_amount / dist) * conf)
-            pos_val = size * price
-            
-            if pos_val > capital * 0.3:
-                size = int((capital * 0.3) / price)
-                pos_val = size * price
-
-            pct = (pos_val / capital) * 100
-            return size, {"cap": int(pos_val), "pct": round(pct, 1)}
-        except: return 0, default
-
-class Backtest_Engine:
-    @staticmethod
-    @st.cache_data(ttl=3600)
-    def run_backtest(ticker):
-        try:
-            df = robust_download(ticker, "2y")
-            if df.empty or len(df) < 100: return None
-            
-            df['EMA22'] = df['Close'].ewm(span=22).mean()
-            df['MACD'] = df['Close'].ewm(span=12).mean() - df['Close'].ewm(span=26).mean()
-            df['Signal'] = df['MACD'].ewm(span=9).mean()
-            df['Hist'] = df['MACD'] - df['Signal']
-            
-            df['Green'] = (df['EMA22'] > df['EMA22'].shift(1)) & (df['Hist'] > 0) & (df['Hist'] > df['Hist'].shift(1))
-            
-            position = 0; entry_price = 0; equity = [100000]
-            
-            for i in range(1, len(df)):
-                price = df['Close'].iloc[i]
-                if position == 0 and df['Green'].iloc[i]:
-                    position = 1; entry_price = price
-                elif position == 1 and (df['Hist'].iloc[i] < 0 or price < df['EMA22'].iloc[i]):
-                    position = 0
-                    profit_pct = (price - entry_price) / entry_price
-                    equity.append(equity[-1] * (1 + profit_pct))
-                
-                if position == 1:
-                    change = (df['Close'].iloc[i] / df['Close'].iloc[i-1]) - 1
-                    equity.append(equity[-1] * (1 + change))
-                else:
-                    equity.append(equity[-1])
-            
-            total_ret = (equity[-1] - 100000) / 100000
-            return {"total_return": total_ret, "equity_curve": pd.DataFrame({'Equity': equity[-len(df):]}, index=df.index)}
-        except: return None
-
-class Message_Generator:
-    @staticmethod
-    def get_verdict(ticker, hybrid, m_score, chips, fvgs, ff_data):
-        tag = "😐 觀望 (Hold)"; bg = "#333"
-        if hybrid >= 80: tag = "🔥 強力買進 (Strong Buy)"; bg = "#3fb950"
-        elif hybrid >= 60: tag = "✅ 買進 (Buy)"; bg = "#1f6feb"
-        elif hybrid <= 40: tag = "❄️ 弱勢 (Weak)"; bg = "#888"
-        elif hybrid <= 20: tag = "⛔ 危險 (Sell)"; bg = "#f85149"
-        
-        reasons = []
-        if m_score >= 70: reasons.append("技術動能強勁")
-        if chips and chips['latest'] > 0: reasons.append("外資買超")
-        if any(f['type']=='Bull' for f in fvgs): reasons.append("回測 Bullish FVG")
-        
-        if ff_data:
-            if ff_data['Beta_RMW']['val'] > 0 and ff_data['Beta_RMW']['sig']: reasons.append("高獲利因子")
-            if ff_data['Beta_MOM']['val'] > 0 and ff_data['Beta_MOM']['sig']: reasons.append("動能因子強勢")
-            if ff_data['Beta_HML']['val'] < 0 and ff_data['Beta_HML']['sig']: reasons.append("高成長屬性")
-
-        reason_str = "，".join(reasons) if reasons else "多空不明"
-        return tag, f"{ticker} 目前呈現 {tag.split(' ')[1]}。主因：{reason_str}。", bg
-
-# =============================================================================
-# MAIN UI
+# 5. 主程式入口 (Main Loop)
 # =============================================================================
 def main():
-    st.sidebar.markdown("## ⚙️ 戰情控制台")
-    capital = st.sidebar.number_input("本金 (Capital)", value=1000000, step=10000)
-    target_in = st.sidebar.text_input("代碼 (Ticker)", "2330.TW").upper()
-    
-    if "target" not in st.session_state: st.session_state.target = "2330.TW"
-    if st.sidebar.button("分析單一標的"): st.session_state.target = target_in
-    
-    st.sidebar.markdown("---")
-    with st.sidebar.expander("📡 主動掃描器 (Scanner)"):
-        scan_source = st.radio("來源", ["線上掃描", "CSV匯入"])
-        if scan_source == "線上掃描":
-            market = st.selectbox("市場", ["🇹🇼 台股", "🇺🇸 美股", "🪙 加密貨幣"])
-            if st.button("🚀 啟動掃描"):
-                with st.spinner("Deep Scanning..."):
-                    tickers = Global_Market_Loader.get_scan_list(market)
-                    res = []
-                    bar = st.progress(0)
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as exe:
-                        futures = {exe.submit(Scanner_Engine_Elder.analyze_single, t): t for t in tickers}
-                        done = 0
-                        for f in concurrent.futures.as_completed(futures):
-                            r = f.result(); done += 1
-                            if r: res.append(r)
-                            bar.progress(done/len(tickers))
-                    st.session_state.scan_results = sorted(res, key=lambda x: x['score'], reverse=True)
-                    bar.empty()
-        else:
-            uploaded = st.file_uploader("上傳CSV", type=['csv'])
-            if uploaded and st.button("🚀 掃描上傳清單"):
-                try:
-                    df_up = pd.read_csv(uploaded)
-                    tickers = df_up.iloc[:, 0].astype(str).tolist()
-                    res = []
-                    bar = st.progress(0)
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as exe:
-                        futures = {exe.submit(Scanner_Engine_Elder.analyze_single, t): t for t in tickers}
-                        done = 0
-                        for f in concurrent.futures.as_completed(futures):
-                            r = f.result(); done += 1
-                            if r: res.append(r)
-                            bar.progress(done/len(tickers))
-                    st.session_state.scan_results = sorted(res, key=lambda x: x['score'], reverse=True)
-                    bar.empty()
-                except: st.error("CSV 格式錯誤")
-
-    if "scan_results" not in st.session_state: st.session_state.scan_results = []
-    if st.session_state.scan_results:
-        with st.expander("🔭 掃描結果 (Scan Results)"):
-            st.dataframe(pd.DataFrame(st.session_state.scan_results), use_container_width=True)
-            scan_tickers = [r['ticker'] for r in st.session_state.scan_results]
-            sel = st.selectbox("Load Result:", scan_tickers)
-            if st.button("Load Selected"): 
-                st.session_state.target = sel
-                st.rerun()
-
-    target = st.session_state.target
-
-    # 1. Macro Regime Dashboard
-    macro = Macro_Risk_Engine.calculate_market_regime()
-    st.markdown("### 🌍 宏觀戰情室 (Global Macro)")
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        st.markdown(f"""<div class="metric-card" style="border-left-color:{macro['color']}">
-        <div class="highlight-lbl">MARKET REGIME</div>
-        <div class="highlight-val" style="color:{macro['color']}; font-size:20px">{macro['regime']}</div>
-        <div class="smart-text">Risk Score: {macro['score']}</div></div>""", unsafe_allow_html=True)
-    with m2: st.metric("VIX (恐慌指數)", f"{macro['data']['VIX']:.2f}")
-    with m3: st.metric("US 10Y Yield", f"{macro['data']['US10Y']:.2f}%")
-    with m4: st.metric("DXY (美元指數)", f"{macro['data']['DXY']:.2f}")
-    
-    st.divider()
-
-    # 2. Analysis Execution
-    with st.spinner(f"Engaging Fama-French 6-Factor Model on {target}..."):
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            f_micro = executor.submit(Micro_Engine_Pro.analyze, target)
-            f_news = executor.submit(News_Intel_Engine.fetch_news, target)
-            
-            m_score, sigs, df_m, atr, chips, curr_p, _, fvgs, ff_analysis = f_micro.result()
-            news, sent = f_news.result()
-            
-            dcf_res = PEG_Valuation_Engine.calculate(target, sent)
-            backtest = Backtest_Engine.run_backtest(target)
-
-        # Risk Score Integration
-        hybrid = int((macro['score'] * 0.3) + (m_score * 0.7))
+    with st.sidebar:
+        st.title("⚡ MARCS ULT")
+        st.caption("v100.2 | Physics Core")
+        st.markdown("---")
         
-        sl_p = curr_p - 2.5 * atr if atr > 0 else 0
-        tp_p = curr_p + 4.0 * atr if atr > 0 else 0
-        risk_pct = round((sl_p / curr_p - 1)*100, 2) if curr_p > 0 else 0
-        size, r_d = Risk_Manager.calculate(capital, curr_p, sl_p, target, hybrid)
-
-    # 3. Verdict & UI
-    tag, comm, bg = Message_Generator.get_verdict(target, hybrid, m_score, chips, fvgs, ff_analysis)
-    
-    c_tag = f"<span class='chip-tag' style='background:#f44336'>外資 {chips['latest']}</span>" if chips else ""
-    st.markdown(f"<h1 style='color:white'>{target} <span style='color:#ffae00'>${curr_p:.2f}</span> {c_tag}</h1>", unsafe_allow_html=True)
-    st.markdown(f"""<div class="verdict-box" style="background:{bg}30; border-color:{bg}"><h2 style="margin:0; color:{bg}">{tag}</h2><p style="margin-top:5px; color:#ccc">{comm}</p></div>""", unsafe_allow_html=True)
-
-    t1, t2, t3, t4 = st.columns(4)
-    with t1: st.markdown(f"""<div class="tac-card"><div><div class="tac-label">ATR (Volatility)</div><div class="tac-val">{atr:.2f}</div></div><div class="tac-sub">Risk Unit</div></div>""", unsafe_allow_html=True)
-    with t2: st.markdown(f"""<div class="tac-card" style="border-color:#f44336"><div><div class="tac-label">STOP LOSS</div><div class="tac-val" style="color:#f44336">${sl_p:.2f}</div></div><div class="tac-sub">{risk_pct}% Risk</div></div>""", unsafe_allow_html=True)
-    with t3: st.markdown(f"""<div class="tac-card" style="border-color:#4caf50"><div><div class="tac-label">TAKE PROFIT</div><div class="tac-val" style="color:#4caf50">${tp_p:.2f}</div></div><div class="tac-sub">Reward 1.6x</div></div>""", unsafe_allow_html=True)
-    with t4: st.markdown(f"""<div class="tac-card"><div><div class="tac-label">SUGGESTED SIZE</div><div class="tac-val">{r_d['pct']}%</div></div><div class="tac-sub">${r_d['cap']:,}</div></div>""", unsafe_allow_html=True)
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">技術評分</div><div class="highlight-val">{m_score}</div><div class="smart-text">{sigs[0] if sigs else '盤整'}</div></div>""", unsafe_allow_html=True)
-    with c2: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">FF5 模型品質 (R²)</div><div class="highlight-val">{ff_analysis['R2']:.2f}</div><div class="smart-text">學術因子解釋力</div></div>""" if ff_analysis else "", unsafe_allow_html=True)
-    with c3: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">PEG 情緒修正</div><div class="highlight-val">{sent:+.2f}</div><div class="smart-text">News Adj</div></div>""", unsafe_allow_html=True)
-    with c4: st.markdown(f"""<div class="metric-card"><div class="highlight-lbl">SMC 訊號</div><div class="highlight-val">{len(fvgs)}</div><div class="smart-text">Active FVG</div></div>""", unsafe_allow_html=True)
-
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 SMC 戰術圖表", "🧬 六因子雷達與估值", "📰 情報中心", "🔄 策略回測"])
-    
-    with tab1:
-        if not df_m.empty and 'EMA22' in df_m.columns:
-            fig, ax = plt.subplots(figsize=(12, 5))
-            ax.plot(df_m.index, df_m['Close'], color='#e0e0e0', lw=1.5, label='Price')
-            ax.plot(df_m.index, df_m['EMA22'], color='#ffae00', lw=1.5, label='EMA 22')
-            
-            for fvg in fvgs:
-                color = 'green' if fvg['type'] == 'Bull' else 'red'
-                rect = patches.Rectangle((fvg['idx'], fvg['bottom']), width=timedelta(days=5), height=fvg['top']-fvg['bottom'], linewidth=0, edgecolor=None, facecolor=color, alpha=0.3)
-                ax.add_patch(rect)
-                ax.text(fvg['idx'], fvg['top'], f" {fvg['type']} FVG", color=color, fontsize=8, verticalalignment='bottom')
-
-            ax.axhline(sl_p, color='#f44336', ls='--', label=f'SL: {sl_p:.2f}')
-            ax.axhline(tp_p, color='#4caf50', ls='--', label=f'TP: {tp_p:.2f}')
-            ax.legend(loc='upper left')
-            ax.set_facecolor('#0d1117'); fig.patch.set_facecolor('#0d1117')
-            ax.tick_params(colors='#888'); ax.grid(True, color='#333', alpha=0.3)
-            st.pyplot(fig)
-            plt.close(fig)
-            
-            fig2, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 4), sharex=True)
-            hist = df_m['MACD_Hist'].tail(60)
-            cols = ['#4caf50' if h>0 else '#f44336' for h in hist]
-            ax1.bar(hist.index, hist, color=cols, alpha=0.8); ax1.set_title("MACD Histogram", color='white', fontsize=10)
-            ax1.set_facecolor('#0d1117'); ax1.tick_params(colors='#888')
-            
-            fi = df_m['Force'].tail(60)
-            ax2.plot(fi.index, fi, color='#00f2ff', lw=1); ax2.set_title("Force Index (13)", color='white', fontsize=10)
-            ax2.axhline(0, color='gray', ls='--')
-            ax2.set_facecolor('#0d1117'); ax2.tick_params(colors='#888')
-            fig2.patch.set_facecolor('#0d1117')
-            st.pyplot(fig2)
-            plt.close(fig2)
-        else: st.warning("數據不足，無法繪圖")
-
-    with tab2:
-        c_val1, c_val2 = st.columns([1, 1])
+        mode = st.radio("SYSTEM MODULE", [
+            "🌍 MACRO ORACLE", 
+            "🔭 QUANTUM SCANNER", 
+            "🧪 PHYSICS LAB"
+        ])
         
-        # [左側] 六因子雷達圖
-        with c_val1:
-            st.markdown("#### 🧬 Factor Exposure DNA (六因子曝險)")
-            if ff_analysis:
-                categories = ['市場 (Mkt)', '規模 (Size)', '價值 (Value)', '獲利 (Profit)', '投資 (Inv)', '動能 (Mom)']
-                values = [
-                    ff_analysis['Beta_Mkt']['val'],
-                    ff_analysis['Beta_SMB']['val'], 
-                    ff_analysis['Beta_HML']['val'], 
-                    ff_analysis['Beta_RMW']['val'], 
-                    ff_analysis['Beta_CMA']['val'], 
-                    ff_analysis['Beta_MOM']['val']  
-                ]
-                
-                fig_radar = go.Figure()
-                fig_radar.add_trace(go.Scatterpolar(
-                    r=values,
-                    theta=categories,
-                    fill='toself',
-                    name=target,
-                    line_color='#ffae00'
-                ))
-                fig_radar.update_layout(
-                    polar=dict(radialaxis=dict(visible=True, range=[-1, 2])),
-                    showlegend=False,
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    font=dict(color='white'),
-                    margin=dict(l=40, r=40, t=40, b=40)
-                )
-                st.plotly_chart(fig_radar, use_container_width=True)
-            else:
-                st.info("無法取得六因子數據，請稍後再試。")
-
-        # [右側] 估值儀表板
-        with c_val2:
-            st.markdown("#### ⚖️ Fair Value Gauge (估值水位)")
-            if dcf_res:
-                fair_price = dcf_res['fair']
-                
-                diff_pct = (curr_p - fair_price) / fair_price
-                state = "合理 (Fair)"
-                color = "white"
-                if diff_pct < -0.2: 
-                    state = "低估 (Undervalued)"
-                    color = "#4caf50"
-                elif diff_pct > 0.2: 
-                    state = "高估 (Overvalued)"
-                    color = "#f44336"
-                
-                st.markdown(f"""
-                <div style="text-align:center; padding:20px; border:1px solid #444; border-radius:10px;">
-                    <div style="font-size:14px; color:#aaa;">當前股價 vs 合理價</div>
-                    <div style="font-size:36px; font-weight:bold; color:{color};">${curr_p:.2f}</div>
-                    <div style="font-size:14px; color:#888;">合理目標: ${fair_price:.2f}</div>
-                    <div style="margin-top:10px; padding:5px; background:{color}20; color:{color}; border-radius:5px;">
-                        {state} ({diff_pct*100:+.1f}%)
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                st.write("")
-                st.markdown("**估值模型詳情 (PEG):**")
-                st.json(dcf_res)
-            else:
-                st.warning("缺乏財報數據，無法估值")
-
-    with tab3:
-        if news:
-            cols = st.columns(3)
-            for i, item in enumerate(news):
-                bd = "#4caf50" if item['sent']=="pos" else "#f44336" if item['sent']=="neg" else "#444"
-                with cols[i%3]: st.markdown(f"""<div class="news-card" style="border-left:3px solid {bd}"><a href="{item['link']}" target="_blank" class="news-title">{item['title']}</a><div class="news-meta" style="color:#666; font-size:12px; margin-top:5px;">{item['date']}</div></div>""", unsafe_allow_html=True)
-        else: st.info("無近期新聞")
-
-    with tab4:
-        if backtest:
-            b1, b2 = st.columns([1, 3])
-            with b1: 
-                ret_color = "green" if backtest['total_return'] > 0 else "red"
-                st.markdown(f"### 總報酬 (2Y)\n<span style='color:{ret_color}; font-size:24px; font-weight:bold'>{backtest['total_return']:.1%}</span>", unsafe_allow_html=True)
-                st.caption("策略：EMA22 趨勢 + MACD 動能")
-            with b2:
-                st.line_chart(backtest['equity_curve'], color="#ffae00")
-        else: st.warning("數據不足，無法回測")
+        st.markdown("---")
+        st.info("System Status: ONLINE")
+    
+    if mode == "🌍 MACRO ORACLE":
+        render_macro_oracle()
+    elif mode == "🔭 QUANTUM SCANNER":
+        render_market_scanner()
+    elif mode == "🧪 PHYSICS LAB":
+        render_strategy_lab()
 
 if __name__ == "__main__":
     main()
