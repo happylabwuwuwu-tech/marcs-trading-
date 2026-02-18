@@ -30,10 +30,14 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import requests
+import urllib3  # [PATCH] 用於屏蔽 SSL 警告
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.signal import hilbert
 from scipy.stats import norm
+
+# [PATCH] 屏蔽不安全的連線警告 (保持控制台乾淨)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 兼容性處理
 try:
@@ -116,16 +120,16 @@ class Market_List_Provider:
     def get_full_tw_tickers():
         tickers = []
         try:
-            # 1. 上市 (Mode=2)
+            # 1. 上市 (Mode=2) - [PATCH] 強制關閉 SSL 驗證 (verify=False)
             url_twse = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
-            res_twse = requests.get(url_twse, timeout=10)
+            res_twse = requests.get(url_twse, timeout=15, verify=False) 
             df_twse = pd.read_html(res_twse.text)[0]
             df_twse.columns = df_twse.iloc[0]
             df_twse = df_twse.iloc[1:]
             
-            # 2. 上櫃 (Mode=4)
+            # 2. 上櫃 (Mode=4) - [PATCH] 強制關閉 SSL 驗證 (verify=False)
             url_tpex = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"
-            res_tpex = requests.get(url_tpex, timeout=10)
+            res_tpex = requests.get(url_tpex, timeout=15, verify=False)
             df_tpex = pd.read_html(res_tpex.text)[0]
             df_tpex.columns = df_tpex.iloc[0]
             df_tpex = df_tpex.iloc[1:]
@@ -138,9 +142,13 @@ class Market_List_Provider:
             
             return tickers
         except Exception as e:
-            st.error(f"Crawler Error: {e} (Need 'lxml' installed)")
-            # Fallback if crawler fails
-            return ["2330.TW", "2317.TW", "2454.TW", "2603.TW", "2881.TW", "2382.TW", "2303.TW"]
+            # 如果還是失敗，回傳一組擴大的安全名單作為備案，確保系統不崩潰
+            st.error(f"Crawler Error (SSL/Parse): {e}. Using backup list.")
+            return [
+                "2330.TW", "2317.TW", "2454.TW", "2603.TW", "2881.TW", "2382.TW", "2303.TW", 
+                "3231.TW", "2356.TW", "2376.TW", "3017.TW", "2383.TW", "6669.TW", "3035.TWO",
+                "3037.TW", "2368.TW", "2412.TW", "1101.TW", "2882.TW", "2891.TW"
+            ]
 
     @staticmethod
     def get_crypto_list():
@@ -195,7 +203,7 @@ class Batch_Pre_Filter:
         return survivors
 
 # =============================================================================
-# 3. 物理引擎 (Causal) - 已修復 Sync 0 問題
+# 3. 物理引擎 (Causal) - [PATCHED] 已修復 Sync 0 問題
 # =============================================================================
 class Causal_Physics_Engine:
     @staticmethod
@@ -232,8 +240,13 @@ class Causal_Physics_Engine:
         
         sync_raw = np.cos(phase_c - phase_v)
         sync_raw[:64] = 0 # 物理熱機期
-        df['Sync'] = sync_raw
-        df['Sync_Smooth'] = pd.Series(sync_raw).rolling(5).mean().fillna(0)
+        
+        # [CRITICAL PATCH] 解決 Index Alignment 問題
+        # 必須將 Numpy Array 直接賦值給 Column，讓 Pandas 自動忽略索引對齊
+        df['Sync'] = sync_raw 
+        
+        # 使用已經在 df 內的 Column 進行 Rolling
+        df['Sync_Smooth'] = df['Sync'].rolling(5).mean().fillna(0)
         
         # 2. VPIN
         delta_p = c.diff()
@@ -298,14 +311,12 @@ class News_Intel_Engine:
 class Universal_Analyst:
     @staticmethod
     def analyze(ticker, fast_mode=False):
-        # [CRITICAL FIX] 解決 Sync=0 的關鍵：
-        # 就算在 fast_mode (掃描模式)，也要抓至少 1 年數據，
-        # 確保物理引擎有 >64 根 K 棒進行熱機 (Warm-up)。
+        # [CRITICAL] fast_mode 下也要抓 1 年數據，確保物理引擎有足夠 Warm-up
         period = "1y" if fast_mode else "2y"
         
         df = robust_download(ticker, period)
         
-        # [Safety Valve] 提高安全閥到 100，避免無效數據
+        # [Safety Valve] 提高安全閥
         if df.empty or len(df) < 100: return None
         
         df = Causal_Physics_Engine.calc_metrics_cached(df)
@@ -468,21 +479,18 @@ def render_quantum_scanner():
         bar = st.progress(0)
         status = st.empty()
         
-        # 為了避免過久，這裡可以設一個上限，例如只跑前 500 檔
-        # 但既然是 Leviathan 模式，我們讓它跑完
         scan_targets = targets
         
         for i, t in enumerate(scan_targets):
             status.text(f"🔬 Computing Physics: {t}...")
             try:
-                # 這裡調用修復過的 analyze，確保 fast_mode 也有 1 年數據
                 r = Universal_Analyst.analyze(t, fast_mode=True)
                 if r: 
                     res_list.append({
                         "Ticker": t, 
                         "Price": r['last']['Close'],
                         "Score": float(f"{r['score']:.1f}"), 
-                        "Sync": float(f"{r['last']['Sync_Smooth']:.4f}"), # 4位小數以觀察微小變化
+                        "Sync": float(f"{r['last']['Sync_Smooth']:.4f}"), 
                         "RSI": float(f"{r['last']['RSI']:.0f}"),
                         "Trend": float(f"{r['dna']['Trend']:.0f}")
                     })
