@@ -1,3 +1,4 @@
+install lxml
 import sys
 import os
 import types
@@ -34,7 +35,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.signal import hilbert
 from scipy.stats import norm
-from FinMind.data import DataLoader
 
 # 兼容性處理
 try:
@@ -48,7 +48,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 # 1. 視覺核心 (CSS)
 # =============================================================================
-st.set_page_config(page_title="MARCS V150 INFINITY", layout="wide", page_icon="⚛️")
+st.set_page_config(page_title="MARCS V160 LEVIATHAN", layout="wide", page_icon="⚛️")
 
 st.markdown("""
 <style>
@@ -93,21 +93,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# 2. 數據獲取與清單層
+# 2. 數據獲取與爬蟲層 (LEVIATHAN ENGINE)
 # =============================================================================
 @st.cache_data(ttl=3600)
 def robust_download(ticker, period="2y"):
     try:
-        # 增加 auto_adjust=True 以獲得復權價格
         df = yf.download(ticker, period=period, progress=False, auto_adjust=True, threads=False)
         if df.empty: return pd.DataFrame()
         
-        # 處理 MultiIndex Column 問題 (yfinance v0.2+ 常見問題)
+        # 處理 MultiIndex Column (yfinance v0.2+)
         if isinstance(df.columns, pd.MultiIndex): 
             try:
                 df.columns = df.columns.get_level_values(0)
-            except:
-                pass
+            except: pass
                 
         if df.index.tz is not None: df.index = df.index.tz_localize(None)
         return df
@@ -115,25 +113,90 @@ def robust_download(ticker, period="2y"):
 
 class Market_List_Provider:
     @staticmethod
+    @st.cache_data(ttl=86400) # 每天只爬一次
+    def get_full_tw_tickers():
+        tickers = []
+        try:
+            # 1. 上市 (Mode=2)
+            url_twse = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
+            res_twse = requests.get(url_twse, timeout=10)
+            df_twse = pd.read_html(res_twse.text)[0]
+            df_twse.columns = df_twse.iloc[0]
+            df_twse = df_twse.iloc[1:]
+            
+            # 2. 上櫃 (Mode=4)
+            url_tpex = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"
+            res_tpex = requests.get(url_tpex, timeout=10)
+            df_tpex = pd.read_html(res_tpex.text)[0]
+            df_tpex.columns = df_tpex.iloc[0]
+            df_tpex = df_tpex.iloc[1:]
+            
+            # 合併與清洗
+            df_all = pd.concat([df_twse, df_tpex])
+            df_all['Code'] = df_all['有價證券代號及名稱'].apply(lambda x: x.split()[0] if type(x)==str else "")
+            stocks = df_all[df_all['Code'].str.len() == 4] # 只留4碼股票
+            tickers = [f"{c}.TW" for c in stocks['Code'].tolist()]
+            
+            return tickers
+        except Exception as e:
+            st.error(f"Crawler Error: {e} (Need 'lxml' installed)")
+            # Fallback if crawler fails
+            return ["2330.TW", "2317.TW", "2454.TW", "2603.TW", "2881.TW", "2382.TW", "2303.TW"]
+
+    @staticmethod
     def get_crypto_list():
-        # Top Cryptos
         return [
             "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "DOGE-USD", "ADA-USD", "AVAX-USD", 
             "TRX-USD", "DOT-USD", "LINK-USD", "MATIC-USD", "LTC-USD", "BCH-USD", "UNI-USD", "ATOM-USD",
-            "XLM-USD", "ETC-USD", "FIL-USD", "HBAR-USD", "APT-USD", "ARB-USD", "OP-USD", "NEAR-USD",
-            "VET-USD", "GRT-USD", "MKR-USD", "SNX-USD", "AAVE-USD", "ALGO-USD", "AXS-USD", "SAND-USD",
-            "EOS-USD", "XTZ-USD", "THETA-USD", "MANA-USD", "FTM-USD", "PEPE-USD", "SHIB-USD"
+            "PEPE-USD", "SHIB-USD", "NEAR-USD", "APT-USD", "ARB-USD", "OP-USD", "SUI-USD"
         ]
 
+class Batch_Pre_Filter:
     @staticmethod
-    def get_scan_list(market_type):
-        if "TW" in market_type: return ["2330.TW", "2317.TW", "2454.TW", "2603.TW", "2382.TW", "6669.TW", "3035.TWO", "3037.TW", "2368.TW", "2881.TW", "2303.TW", "2412.TW", "1101.TW", "2882.TW", "2891.TW"]
-        elif "US" in market_type: return ["NVDA", "TSLA", "AAPL", "MSFT", "AMD", "GOOG", "AMZN", "META", "SMCI", "COIN", "MSTR", "PLTR", "INTC", "QCOM", "NFLX"]
-        elif "Crypto" in market_type: return Market_List_Provider.get_crypto_list()
-        return []
+    def filter_by_volume(tickers, min_volume_shares=1000000): # 預設 1000 張
+        survivors = []
+        batch_size = 50 
+        
+        status_text = st.empty()
+        bar = st.progress(0)
+        
+        for i in range(0, len(tickers), batch_size):
+            batch = tickers[i : i+batch_size]
+            if not batch: continue
+            
+            status_text.text(f"🚀 Filtering Volume: Batch {i//batch_size + 1}...")
+            bar.progress((i / len(tickers)))
+            
+            try:
+                # 關鍵：只抓 5 天數據來檢查成交量，速度極快
+                str_tickers = " ".join(batch)
+                df = yf.download(str_tickers, period="5d", group_by='ticker', progress=False, threads=True)
+                
+                if df.empty: continue
+
+                for t in batch:
+                    try:
+                        # 處理單一股票與多股票的結構差異
+                        if len(batch) == 1:
+                            vol = df['Volume'].iloc[-1]
+                            price = df['Close'].iloc[-1]
+                        else:
+                            if t not in df.columns.levels[0]: continue
+                            vol = df[t]['Volume'].iloc[-1]
+                            price = df[t]['Close'].iloc[-1]
+                        
+                        # 規則：成交量 > 門檻 且 股價 > 10元
+                        if vol > min_volume_shares and price > 10:
+                            survivors.append(t)
+                    except: continue
+            except: pass
+                
+        bar.empty()
+        status_text.empty()
+        return survivors
 
 # =============================================================================
-# 3. 物理引擎 (Causal)
+# 3. 物理引擎 (Causal) - 已修復 Sync 0 問題
 # =============================================================================
 class Causal_Physics_Engine:
     @staticmethod
@@ -143,7 +206,6 @@ class Causal_Physics_Engine:
         analytic_signal = np.zeros(n, dtype=complex)
         for i in range(window, n):
             segment = values[i-window : i] * np.hanning(window)
-            # 防止全零段導致錯誤
             if np.all(segment == 0): 
                 analytic_signal[i] = 0
             else:
@@ -153,7 +215,6 @@ class Causal_Physics_Engine:
     @staticmethod
     @st.cache_data(ttl=3600, show_spinner=False)
     def calc_metrics_cached(df):
-        # 這裡的檢查交給 Universal Analyst，這裡只負責算
         if df.empty: return df
         df = df.copy()
         
@@ -175,7 +236,7 @@ class Causal_Physics_Engine:
         df['Sync'] = sync_raw
         df['Sync_Smooth'] = pd.Series(sync_raw).rolling(5).mean().fillna(0)
         
-        # 2. VPIN (Fix NaN)
+        # 2. VPIN
         delta_p = c.diff()
         sigma = delta_p.rolling(20).std() + 1e-9
         cdf = norm.cdf(delta_p / sigma)
@@ -196,22 +257,19 @@ class Causal_Physics_Engine:
         
         return df.fillna(method='bfill').fillna(0)
 
-# =============================================================================
-# 4. 外部數據與戰術層
-# =============================================================================
-class FinMind_Engine:
+class SMC_Engine:
     @staticmethod
-    @st.cache_data(ttl=3600)
-    def get_tw_data(ticker):
-        if ".TW" not in ticker and ".TWO" not in ticker: return None
-        USER_TOKEN = "" # 請填入你的 Token
-        try:
-            # 實戰中解開以下代碼
-            # api = DataLoader()
-            # if USER_TOKEN: api.login_by_token(api_token=USER_TOKEN)
-            # df = api.taiwan_stock_institutional_investors(...) 
-            return None 
-        except: return None
+    def identify_fvg(df):
+        fvgs = []
+        if len(df) < 35: return []
+        for i in range(len(df)-2, len(df)-30, -1):
+            try:
+                if df['Low'].iloc[i] > df['High'].iloc[i-2]:
+                    fvgs.append({'type': 'Bull', 'top': df['Low'].iloc[i], 'bottom': df['High'].iloc[i-2], 'date': df.index[i-2]})
+                elif df['High'].iloc[i] < df['Low'].iloc[i-2]:
+                    fvgs.append({'type': 'Bear', 'top': df['Low'].iloc[i-2], 'bottom': df['High'].iloc[i], 'date': df.index[i-2]})
+            except IndexError: continue
+        return fvgs[:3]
 
 class News_Intel_Engine:
     @staticmethod
@@ -235,36 +293,20 @@ class News_Intel_Engine:
             return items, max(-1, min(1, sentiment_score/3))
         except: return [], 0
 
-class SMC_Engine:
-    @staticmethod
-    def identify_fvg(df):
-        fvgs = []
-        # [FIX] 增加長度檢查，避免索引越界
-        if len(df) < 35: return []
-        
-        for i in range(len(df)-2, len(df)-30, -1):
-            try:
-                # Bullish FVG
-                if df['Low'].iloc[i] > df['High'].iloc[i-2]:
-                    fvgs.append({'type': 'Bull', 'top': df['Low'].iloc[i], 'bottom': df['High'].iloc[i-2], 'date': df.index[i-2]})
-                # Bearish FVG
-                elif df['High'].iloc[i] < df['Low'].iloc[i-2]:
-                    fvgs.append({'type': 'Bear', 'top': df['Low'].iloc[i-2], 'bottom': df['High'].iloc[i], 'date': df.index[i-2]})
-            except IndexError:
-                continue
-        return fvgs[:3]
-
 # =============================================================================
-# 5. 分析整合 (已修復核心漏洞)
+# 4. 分析整合 (Universal Analyst)
 # =============================================================================
 class Universal_Analyst:
     @staticmethod
     def analyze(ticker, fast_mode=False):
-        # [FIX 1] 強制將 fast_mode 設為 1y，確保 K 棒數 > 64，解決 Sync=0 問題
+        # [CRITICAL FIX] 解決 Sync=0 的關鍵：
+        # 就算在 fast_mode (掃描模式)，也要抓至少 1 年數據，
+        # 確保物理引擎有 >64 根 K 棒進行熱機 (Warm-up)。
         period = "1y" if fast_mode else "2y"
+        
         df = robust_download(ticker, period)
         
-        # [FIX 2] 安全閥提升到 100，確保物理引擎有預熱空間
+        # [Safety Valve] 提高安全閥到 100，避免無效數據
         if df.empty or len(df) < 100: return None
         
         df = Causal_Physics_Engine.calc_metrics_cached(df)
@@ -279,18 +321,14 @@ class Universal_Analyst:
         if last['EMA20'] > last['EMA50']: trend_s += 20
         dna['Trend'] = min(trend_s, 100)
         
-        # Momentum - [FIX 3] 使用動態 Lookback，避免新股報錯
+        # Momentum (Dynamic Lookback)
         lookback = min(60, len(df))
         rsi_window = df['RSI'].tail(lookback)
-        if rsi_window.std() == 0:
-            rsi_z = 0
-        else:
-            rsi_z = (last['RSI'] - rsi_window.mean()) / (rsi_window.std() + 1e-9)
-            
+        if rsi_window.std() == 0: rsi_z = 0
+        else: rsi_z = (last['RSI'] - rsi_window.mean()) / (rsi_window.std() + 1e-9)
         dna['Momentum'] = min(max(50 + rsi_z*20, 0), 100)
-        if pd.isna(dna['Momentum']): dna['Momentum'] = 50
         
-        # Physics
+        # Physics (Sync)
         phy = last['Sync_Smooth']
         if pd.isna(phy): phy = 0
         dna['Physics'] = min(max(50 + phy*40, 0), 100)
@@ -300,7 +338,6 @@ class Universal_Analyst:
         if pd.isna(vpin): vpin = 0.5
         dna['Flow'] = min(max(100 - vpin*100, 0), 100)
         
-        # Value & Stability
         dna['Value'] = min(max(100 - last['RSI'], 0), 100)
         dna['Stability'] = 50 
         
@@ -310,20 +347,18 @@ class Universal_Analyst:
         fvgs = []
         news = []
         sent = 0
-        fm_data = None
         
         if not fast_mode:
             fvgs = SMC_Engine.identify_fvg(df)
             news, sent = News_Intel_Engine.fetch_news(ticker)
-            fm_data = FinMind_Engine.get_tw_data(ticker)
             
         return {
             "df": df, "last": last, "dna": dna, "score": avg_score,
-            "fvgs": fvgs, "news": news, "sent": sent, "fm_data": fm_data
+            "fvgs": fvgs, "news": news, "sent": sent
         }
 
 # =============================================================================
-# 6. 回測器
+# 5. 回測器
 # =============================================================================
 class Sovereign_Backtester:
     def __init__(self, df, capital=1000000, fee=0.001425*0.6, tax=0.003):
@@ -347,7 +382,6 @@ class Sovereign_Backtester:
             date = self.df.index[i]
             price = row['Close']
             
-            # 策略核心：物理共振 + 趨勢確認
             buy_sig = (row['Sync_Smooth'] > 0.5) and (price > row['EMA20'])
             sell_sig = (row['Sync_Smooth'] < -0.2) or (price < row['EMA20'])
             
@@ -384,12 +418,11 @@ class Sovereign_Backtester:
         return pd.DataFrame(equity), pd.DataFrame(trades), stats
 
 # =============================================================================
-# 7. UI Renderers
+# 6. UI Renderers
 # =============================================================================
 def render_macro_oracle():
     st.markdown("### 🌍 Macro Oracle")
     col1, col2, col3, col4 = st.columns(4)
-    # 這裡可以用爬蟲抓取真實 VIX/DXY，此處為示例
     vix = 21.5; dxy = 104.2
     regime = "NEUTRAL"; c_reg = "#888"
     if vix > 25: regime = "FEAR"; c_reg = "#f85149"
@@ -401,51 +434,80 @@ def render_macro_oracle():
     col4.markdown(f"<div class='metric-card'><div class='highlight-lbl'>RISK</div><div class='highlight-val'>MED</div></div>", unsafe_allow_html=True)
 
 def render_quantum_scanner():
-    st.markdown("### 🔭 Quantum Scanner")
-    st.markdown("<small>Scanning with 1Y Data Buffer to ensure Physics Engine Warm-up.</small>", unsafe_allow_html=True)
+    st.markdown("### 🔭 Quantum Scanner (Leviathan Mode)")
+    st.markdown("<small>System will fetch 1700+ tickers and filter by volume.</small>", unsafe_allow_html=True)
     
-    market = st.selectbox("Market", ["TW", "US", "Crypto"])
-    tickers = Market_List_Provider.get_scan_list(market)
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        market = st.selectbox("Market", ["🇹🇼 台股全市場 (Full TW)", "🇺🇸 美股 (US)", "🪙 Crypto"])
+    with col2:
+        if "TW" in market:
+            vol_lots = st.slider("Min Volume (Lots/張)", 500, 5000, 1000, step=500)
+        else:
+            vol_lots = 0 
     
-    if st.button("🚀 Start Scan"):
+    if st.button("🚀 Start Deep Scan"):
+        # 1. 獲取原始清單
+        if "TW" in market:
+            with st.spinner("🕷️ Crawling TWSE/TPEx (1700+ tickers)..."):
+                raw_tickers = Market_List_Provider.get_full_tw_tickers()
+                st.toast(f"Found {len(raw_tickers)} tickers.")
+        elif "Crypto" in market:
+            raw_tickers = Market_List_Provider.get_crypto_list()
+        else:
+            raw_tickers = ["NVDA", "TSLA", "AAPL", "MSFT", "AMD", "COIN", "PLTR", "MSTR", "GOOG", "AMZN", "META"]
+
+        # 2. 成交量過濾 (僅台股)
+        if "TW" in market:
+            targets = Batch_Pre_Filter.filter_by_volume(raw_tickers, min_volume_shares=vol_lots*1000)
+            st.info(f"📉 Funnel: {len(raw_tickers)} -> {len(targets)} active stocks.")
+        else:
+            targets = raw_tickers
+
+        # 3. 深度物理運算
         res_list = []
         bar = st.progress(0)
+        status = st.empty()
         
-        status_text = st.empty()
+        # 為了避免過久，這裡可以設一個上限，例如只跑前 500 檔
+        # 但既然是 Leviathan 模式，我們讓它跑完
+        scan_targets = targets
         
-        for i, t in enumerate(tickers):
-            status_text.text(f"Scanning {t}...")
+        for i, t in enumerate(scan_targets):
+            status.text(f"🔬 Computing Physics: {t}...")
             try:
-                # Fast Mode 現在強制 1y 數據，解決 Sync=0 問題
+                # 這裡調用修復過的 analyze，確保 fast_mode 也有 1 年數據
                 r = Universal_Analyst.analyze(t, fast_mode=True)
                 if r: 
                     res_list.append({
                         "Ticker": t, 
+                        "Price": r['last']['Close'],
                         "Score": float(f"{r['score']:.1f}"), 
-                        "Sync": float(f"{r['last']['Sync_Smooth']:.4f}"),
+                        "Sync": float(f"{r['last']['Sync_Smooth']:.4f}"), # 4位小數以觀察微小變化
                         "RSI": float(f"{r['last']['RSI']:.0f}"),
                         "Trend": float(f"{r['dna']['Trend']:.0f}")
                     })
-            except Exception as e:
-                # print(f"Error scanning {t}: {e}")
-                pass
-            bar.progress((i+1)/len(tickers))
+            except: pass
+            bar.progress((i+1)/len(scan_targets))
             
-        status_text.empty()
-            
+        status.empty()
+        bar.empty()
+        
         if res_list:
             df = pd.DataFrame(res_list).sort_values("Score", ascending=False)
+            st.success(f"✅ Scan Complete. Found {len(df)} candidates.")
             st.dataframe(
-                df.style.background_gradient(subset=['Score'], cmap='RdYlGn'),
+                df.style.background_gradient(subset=['Score'], cmap='RdYlGn')
+                  .format({"Price": "{:.2f}", "Score": "{:.1f}", "Sync": "{:.4f}"}),
                 use_container_width=True,
                 height=600
             )
         else:
-            st.warning("No data returned. Check your internet connection or ticker list.")
+            st.warning("No data returned.")
 
 def render_sovereign_lab():
     st.markdown("### 🛡️ Sovereign Lab")
-    ticker = st.text_input("Ticker", "BTC-USD")
+    ticker = st.text_input("Ticker", "2330.TW")
     
     if st.button("Deep Analyze"):
         with st.spinner("Analyzing Physics & DNA..."):
@@ -455,11 +517,8 @@ def render_sovereign_lab():
             st.error("Data Insufficient or Download Failed (Need > 100 candles).")
             return
             
-        # Layout
         c1, c2 = st.columns([3, 1])
-        
         with c1:
-            # 1. 戰術板
             score = res['score']
             last = res['last']
             price = last['Close']
@@ -475,7 +534,6 @@ def render_sovereign_lab():
             </div>
             """, unsafe_allow_html=True)
             
-            # 2. 戰術數據
             atr = last['ATR']
             sl = price - (2.5 * atr)
             tp = price + (4.0 * atr)
@@ -490,7 +548,6 @@ def render_sovereign_lab():
             grid_card(g3, "TAKE PROFIT", f"${tp:,.2f}", "Reward 1.6x", "#3fb950")
             grid_card(g4, "SMC ZONES", f"{fvg_count}", "Active FVG", "#ffae00")
             
-            # 3. 圖表
             df = res['df']
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
             fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
@@ -507,7 +564,6 @@ def render_sovereign_lab():
             fig.update_layout(template="plotly_dark", height=500, xaxis_rangeslider_visible=False, margin=dict(l=0,r=0,t=0,b=0))
             st.plotly_chart(fig, use_container_width=True)
             
-            # 4. 新聞
             st.markdown("### 📰 Intel Feed")
             if res['news']:
                 cols = st.columns(2)
@@ -535,13 +591,13 @@ def render_sovereign_lab():
                 row("Trades", f"{stats['trades']}")
                 row("Fees", f"${stats['fees']:,.0f}", "#f85149")
             else:
-                st.write("Backtest Failed (No Data)")
+                st.write("Backtest Failed")
 
 # =============================================================================
-# 8. 主程序
+# 7. 主程序
 # =============================================================================
 def main():
-    st.sidebar.markdown("## 🛡️ MARCS V150 INFINITY")
+    st.sidebar.markdown("## 🛡️ MARCS V160 LEVIATHAN")
     mode = st.sidebar.radio("MODE", ["🌍 Macro Oracle", "🔭 Quantum Scanner", "🛡️ Sovereign Lab"])
     
     if mode == "🌍 Macro Oracle": render_macro_oracle()
