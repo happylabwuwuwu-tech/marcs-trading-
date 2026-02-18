@@ -98,9 +98,17 @@ st.markdown("""
 @st.cache_data(ttl=3600)
 def robust_download(ticker, period="2y"):
     try:
+        # 增加 auto_adjust=True 以獲得復權價格
         df = yf.download(ticker, period=period, progress=False, auto_adjust=True, threads=False)
         if df.empty: return pd.DataFrame()
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        
+        # 處理 MultiIndex Column 問題 (yfinance v0.2+ 常見問題)
+        if isinstance(df.columns, pd.MultiIndex): 
+            try:
+                df.columns = df.columns.get_level_values(0)
+            except:
+                pass
+                
         if df.index.tz is not None: df.index = df.index.tz_localize(None)
         return df
     except: return pd.DataFrame()
@@ -108,7 +116,7 @@ def robust_download(ticker, period="2y"):
 class Market_List_Provider:
     @staticmethod
     def get_crypto_list():
-        # Top 50 Cryptos (Manual List for Stability)
+        # Top Cryptos
         return [
             "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "DOGE-USD", "ADA-USD", "AVAX-USD", 
             "TRX-USD", "DOT-USD", "LINK-USD", "MATIC-USD", "LTC-USD", "BCH-USD", "UNI-USD", "ATOM-USD",
@@ -135,13 +143,18 @@ class Causal_Physics_Engine:
         analytic_signal = np.zeros(n, dtype=complex)
         for i in range(window, n):
             segment = values[i-window : i] * np.hanning(window)
-            analytic_signal[i] = hilbert(segment)[-1]
+            # 防止全零段導致錯誤
+            if np.all(segment == 0): 
+                analytic_signal[i] = 0
+            else:
+                analytic_signal[i] = hilbert(segment)[-1]
         return analytic_signal
 
     @staticmethod
     @st.cache_data(ttl=3600, show_spinner=False)
     def calc_metrics_cached(df):
-        if df.empty or len(df) < 100: return df
+        # 這裡的檢查交給 Universal Analyst，這裡只負責算
+        if df.empty: return df
         df = df.copy()
         
         c = df['Close']; v = df['Volume']
@@ -158,7 +171,7 @@ class Causal_Physics_Engine:
         phase_v = np.angle(analytic_v)
         
         sync_raw = np.cos(phase_c - phase_v)
-        sync_raw[:64] = 0 
+        sync_raw[:64] = 0 # 物理熱機期
         df['Sync'] = sync_raw
         df['Sync_Smooth'] = pd.Series(sync_raw).rolling(5).mean().fillna(0)
         
@@ -191,15 +204,13 @@ class FinMind_Engine:
     @st.cache_data(ttl=3600)
     def get_tw_data(ticker):
         if ".TW" not in ticker and ".TWO" not in ticker: return None
-        # 👇 請在這裡填入 Token
-        USER_TOKEN = "" 
+        USER_TOKEN = "" # 請填入你的 Token
         try:
-            stock_id = ticker.split('.')[0]
-            api = DataLoader()
-            if USER_TOKEN: api.login_by_token(api_token=USER_TOKEN)
-            # data = {"chips": 0, "pe": None, "growth": None}
-            # df = api.taiwan_stock_institutional_investors(...) # 實戰請解開
-            return None # 暫時返回 None 以防無 Token 報錯
+            # 實戰中解開以下代碼
+            # api = DataLoader()
+            # if USER_TOKEN: api.login_by_token(api_token=USER_TOKEN)
+            # df = api.taiwan_stock_institutional_investors(...) 
+            return None 
         except: return None
 
 class News_Intel_Engine:
@@ -216,9 +227,11 @@ class News_Intel_Engine:
                 root = ET.fromstring(resp.content)
                 for item in root.findall('.//item')[:3]:
                     title = item.find('title').text
-                    date = item.find('pubDate').text[:16]
-                    items.append({"title": title, "date": date, "link": item.find('link').text})
-                    if any(x in title for x in ["漲","High","Bull"]): sentiment_score += 1
+                    pubDate = item.find('pubDate')
+                    date = pubDate.text[:16] if pubDate is not None else "Unknown"
+                    link = item.find('link').text
+                    items.append({"title": title, "date": date, "link": link})
+                    if any(x in title for x in ["漲","High","Bull", "強勢", "噴"]): sentiment_score += 1
             return items, max(-1, min(1, sentiment_score/3))
         except: return [], 0
 
@@ -226,28 +239,38 @@ class SMC_Engine:
     @staticmethod
     def identify_fvg(df):
         fvgs = []
-        if len(df) < 5: return []
+        # [FIX] 增加長度檢查，避免索引越界
+        if len(df) < 35: return []
+        
         for i in range(len(df)-2, len(df)-30, -1):
-            if df['Low'].iloc[i] > df['High'].iloc[i-2]:
-                fvgs.append({'type': 'Bull', 'top': df['Low'].iloc[i], 'bottom': df['High'].iloc[i-2], 'date': df.index[i-2]})
-            elif df['High'].iloc[i] < df['Low'].iloc[i-2]:
-                fvgs.append({'type': 'Bear', 'top': df['Low'].iloc[i-2], 'bottom': df['High'].iloc[i], 'date': df.index[i-2]})
+            try:
+                # Bullish FVG
+                if df['Low'].iloc[i] > df['High'].iloc[i-2]:
+                    fvgs.append({'type': 'Bull', 'top': df['Low'].iloc[i], 'bottom': df['High'].iloc[i-2], 'date': df.index[i-2]})
+                # Bearish FVG
+                elif df['High'].iloc[i] < df['Low'].iloc[i-2]:
+                    fvgs.append({'type': 'Bear', 'top': df['Low'].iloc[i-2], 'bottom': df['High'].iloc[i], 'date': df.index[i-2]})
+            except IndexError:
+                continue
         return fvgs[:3]
 
 # =============================================================================
-# 5. 分析整合 (含 NaN 修復)
+# 5. 分析整合 (已修復核心漏洞)
 # =============================================================================
 class Universal_Analyst:
     @staticmethod
     def analyze(ticker, fast_mode=False):
-        period = "6mo" if fast_mode else "2y"
+        # [FIX 1] 強制將 fast_mode 設為 1y，確保 K 棒數 > 64，解決 Sync=0 問題
+        period = "1y" if fast_mode else "2y"
         df = robust_download(ticker, period)
-        if df.empty or len(df) < 60: return None
+        
+        # [FIX 2] 安全閥提升到 100，確保物理引擎有預熱空間
+        if df.empty or len(df) < 100: return None
         
         df = Causal_Physics_Engine.calc_metrics_cached(df)
         last = df.iloc[-1]
         
-        # DNA Calculation with NaN Safety
+        # DNA Calculation
         dna = {}
         
         # Trend
@@ -256,8 +279,14 @@ class Universal_Analyst:
         if last['EMA20'] > last['EMA50']: trend_s += 20
         dna['Trend'] = min(trend_s, 100)
         
-        # Momentum
-        rsi_z = (last['RSI'] - df['RSI'].tail(60).mean()) / (df['RSI'].tail(60).std() + 1e-9)
+        # Momentum - [FIX 3] 使用動態 Lookback，避免新股報錯
+        lookback = min(60, len(df))
+        rsi_window = df['RSI'].tail(lookback)
+        if rsi_window.std() == 0:
+            rsi_z = 0
+        else:
+            rsi_z = (last['RSI'] - rsi_window.mean()) / (rsi_window.std() + 1e-9)
+            
         dna['Momentum'] = min(max(50 + rsi_z*20, 0), 100)
         if pd.isna(dna['Momentum']): dna['Momentum'] = 50
         
@@ -308,6 +337,8 @@ class Sovereign_Backtester:
         position = 0
         trades = []
         equity = []
+        if self.df.empty: return pd.DataFrame(), pd.DataFrame(), {}
+        
         bh_shares = self.capital // self.df['Close'].iloc[0]
         total_fee = 0
         
@@ -315,6 +346,8 @@ class Sovereign_Backtester:
             row = self.df.iloc[i]
             date = self.df.index[i]
             price = row['Close']
+            
+            # 策略核心：物理共振 + 趨勢確認
             buy_sig = (row['Sync_Smooth'] > 0.5) and (price > row['EMA20'])
             sell_sig = (row['Sync_Smooth'] < -0.2) or (price < row['EMA20'])
             
@@ -338,10 +371,13 @@ class Sovereign_Backtester:
             val = cash + (position * price)
             equity.append({'Date': date, 'Equity': val, 'BuyHold': bh_shares * price})
             
+        final_eq = equity[-1]['Equity'] if equity else self.capital
+        final_bh = equity[-1]['BuyHold'] if equity else self.capital
+        
         stats = {
-            'final_equity': equity[-1]['Equity'],
-            'total_return': (equity[-1]['Equity'] - self.capital) / self.capital * 100,
-            'bh_return': (equity[-1]['BuyHold'] - self.capital) / self.capital * 100,
+            'final_equity': final_eq,
+            'total_return': (final_eq - self.capital) / self.capital * 100,
+            'bh_return': (final_bh - self.capital) / self.capital * 100,
             'trades': len(trades),
             'fees': total_fee
         }
@@ -353,6 +389,7 @@ class Sovereign_Backtester:
 def render_macro_oracle():
     st.markdown("### 🌍 Macro Oracle")
     col1, col2, col3, col4 = st.columns(4)
+    # 這裡可以用爬蟲抓取真實 VIX/DXY，此處為示例
     vix = 21.5; dxy = 104.2
     regime = "NEUTRAL"; c_reg = "#888"
     if vix > 25: regime = "FEAR"; c_reg = "#f85149"
@@ -365,6 +402,8 @@ def render_macro_oracle():
 
 def render_quantum_scanner():
     st.markdown("### 🔭 Quantum Scanner")
+    st.markdown("<small>Scanning with 1Y Data Buffer to ensure Physics Engine Warm-up.</small>", unsafe_allow_html=True)
+    
     market = st.selectbox("Market", ["TW", "US", "Crypto"])
     tickers = Market_List_Provider.get_scan_list(market)
     
@@ -372,18 +411,27 @@ def render_quantum_scanner():
         res_list = []
         bar = st.progress(0)
         
+        status_text = st.empty()
+        
         for i, t in enumerate(tickers):
+            status_text.text(f"Scanning {t}...")
             try:
+                # Fast Mode 現在強制 1y 數據，解決 Sync=0 問題
                 r = Universal_Analyst.analyze(t, fast_mode=True)
                 if r: 
                     res_list.append({
                         "Ticker": t, 
                         "Score": float(f"{r['score']:.1f}"), 
-                        "Sync": float(f"{r['last']['Sync_Smooth']:.2f}"),
-                        "RSI": float(f"{r['last']['RSI']:.0f}")
+                        "Sync": float(f"{r['last']['Sync_Smooth']:.4f}"),
+                        "RSI": float(f"{r['last']['RSI']:.0f}"),
+                        "Trend": float(f"{r['dna']['Trend']:.0f}")
                     })
-            except: pass
+            except Exception as e:
+                # print(f"Error scanning {t}: {e}")
+                pass
             bar.progress((i+1)/len(tickers))
+            
+        status_text.empty()
             
         if res_list:
             df = pd.DataFrame(res_list).sort_values("Score", ascending=False)
@@ -393,7 +441,7 @@ def render_quantum_scanner():
                 height=600
             )
         else:
-            st.warning("No data returned.")
+            st.warning("No data returned. Check your internet connection or ticker list.")
 
 def render_sovereign_lab():
     st.markdown("### 🛡️ Sovereign Lab")
@@ -404,14 +452,14 @@ def render_sovereign_lab():
             res = Universal_Analyst.analyze(ticker, fast_mode=False)
             
         if res is None:
-            st.error("Data Insufficient.")
+            st.error("Data Insufficient or Download Failed (Need > 100 candles).")
             return
             
         # Layout
         c1, c2 = st.columns([3, 1])
         
         with c1:
-            # 1. 戰術板 (Signal Box)
+            # 1. 戰術板
             score = res['score']
             last = res['last']
             price = last['Close']
@@ -427,7 +475,7 @@ def render_sovereign_lab():
             </div>
             """, unsafe_allow_html=True)
             
-            # 2. 戰術數據網格 (Tactical Grid) - [Fixed]
+            # 2. 戰術數據
             atr = last['ATR']
             sl = price - (2.5 * atr)
             tp = price + (4.0 * atr)
@@ -480,11 +528,14 @@ def render_sovereign_lab():
             def row(l, v, c="#e6edf3"):
                 st.markdown(f"<div class='stat-row'><span>{l}</span><span class='stat-val' style='color:{c}'>{v}</span></div>", unsafe_allow_html=True)
             
-            pnl = stats['final_equity'] - 1000000
-            row("Return", f"{stats['total_return']:.2f}%", "#3fb950" if pnl>0 else "#f85149")
-            row("Alpha", f"{(stats['total_return']-stats['bh_return']):.2f}%", "#d2a8ff")
-            row("Trades", f"{stats['trades']}")
-            row("Fees", f"${stats['fees']:,.0f}", "#f85149")
+            if stats:
+                pnl = stats['final_equity'] - 1000000
+                row("Return", f"{stats['total_return']:.2f}%", "#3fb950" if pnl>0 else "#f85149")
+                row("Alpha", f"{(stats['total_return']-stats['bh_return']):.2f}%", "#d2a8ff")
+                row("Trades", f"{stats['trades']}")
+                row("Fees", f"${stats['fees']:,.0f}", "#f85149")
+            else:
+                st.write("Backtest Failed (No Data)")
 
 # =============================================================================
 # 8. 主程序
