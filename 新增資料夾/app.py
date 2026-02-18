@@ -1,4 +1,3 @@
-install lxml
 import sys
 import os
 import types
