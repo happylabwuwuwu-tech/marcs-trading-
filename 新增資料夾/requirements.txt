@@ -10,3 +10,4 @@ finmind
 packaging
 tqdm
 plotly
+lxml
