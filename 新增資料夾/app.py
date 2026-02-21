@@ -152,7 +152,8 @@ class Batch_Pre_Filter:
                             survivors.append(t)
                     except: continue
             except: pass
-        bar.empty(), status_text.empty()
+        status.empty()
+        bar.empty()
         return survivors
 
 # =============================================================================
