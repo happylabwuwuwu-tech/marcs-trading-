@@ -2,16 +2,16 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import requests
 import warnings
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from scipy.signal import butter, lfilter, hilbert
 from datetime import datetime
 
 # =============================================================================
-# 1. 系統核心配置
+# 1. 系統核心配置 (Core Config)
 # =============================================================================
-st.set_page_config(page_title="MARCS NEO-LEVIATHAN V2", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="MARCS NEO-LEVIATHAN V4", layout="wide", page_icon="🛡️")
 
 st.markdown("""
 <style>
@@ -27,7 +27,7 @@ st.markdown("""
 warnings.filterwarnings('ignore')
 
 # =============================================================================
-# 2. 數據與物理引擎 (Data & Physics) - [CORE KEPT INTACT]
+# 2. 數據與物理引擎 (Data & Physics Engine)
 # =============================================================================
 @st.cache_data(ttl=3600)
 def fetch_data(ticker, period="2y"):
@@ -48,35 +48,6 @@ def fetch_data(ticker, period="2y"):
 
 class Signal_Processor:
     @staticmethod
-    def causal_bandpass(data, lowcut, highcut, fs, order=2):
-        nyq = 0.5 * fs
-        low, high = lowcut / nyq, highcut / nyq
-        b, a = butter(order, [low, high], btype='band')
-        return lfilter(b, a, data)
-
-    @staticmethod
-    def calc_adx(df, n=14):
-        plus_dm = df['High'].diff().clip(lower=0)
-        minus_dm = df['Low'].diff().clip(lower=0) # Logic fix for calc
-        tr1 = df['High'] - df['Low']
-        tr2 = abs(df['High'] - df['Close'].shift(1))
-        tr3 = abs(df['Low'] - df['Close'].shift(1))
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        atr = tr.rolling(n).mean()
-        plus_di = 100 * (plus_dm.ewm(alpha=1/n).mean() / atr)
-        minus_di = 100 * (minus_dm.ewm(alpha=1/n).mean().abs() / atr)
-        dx = 100 * (abs(plus_di - minus_di) / abs(plus_di + minus_di).replace(0, 1))
-        return dx.rolling(n).mean().fillna(0)
-
-    @staticmethod
-    def calc_rsi(series, period=14):
-        delta = series.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-        rs = gain / (loss.replace(0, 1e-9))
-        return 100 - (100 / (1 + rs))
-    
-    @staticmethod
     def calc_atr(df, n=14):
         tr1 = df['High'] - df['Low']
         tr2 = abs(df['High'] - df['Close'].shift(1))
@@ -85,64 +56,40 @@ class Signal_Processor:
         return tr.rolling(n).mean()
 
     @staticmethod
+    def rolling_hurst(series, window=50):
+        diff10 = series.diff(10)
+        diff1 = series.diff(1)
+        var_diff1 = diff1.rolling(window).var()
+        var_diff10 = diff10.rolling(window).var()
+        with np.errstate(divide='ignore', invalid='ignore'):
+            tau = np.log(np.sqrt(var_diff10 / var_diff1.replace(0, np.nan))) / np.log(10)
+            hurst = 0.5 + (tau / 2)
+        return hurst.fillna(0.5)
+
+    @staticmethod
     def engineer_features(df):
-        if len(df) < 200: return df
+        if len(df) < 100: return df
         df = df.copy()
-        df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
-        df['RSI'] = Signal_Processor.calc_rsi(df['Close'])
-        df['ADX'] = Signal_Processor.calc_adx(df)
+        df['SMA20'] = df['Close'].rolling(20).mean()
+        df['SMA50'] = df['Close'].rolling(50).mean()
         df['ATR'] = Signal_Processor.calc_atr(df)
-        
-        log_ret = np.log(df['Close'] / df['Close'].shift(1)).fillna(0)
-        cycle_component = Signal_Processor.causal_bandpass(log_ret.values, 1/40, 1/10, 1, order=2)
-        analytic_signal = hilbert(cycle_component)
-        price_phase = np.angle(analytic_signal)
-        
-        vol_change = df['Volume'].pct_change().fillna(0).replace([np.inf, -np.inf], 0)
-        vol_cycle = Signal_Processor.causal_bandpass(vol_change.values, 1/40, 1/10, 1, order=2)
-        vol_phase = np.angle(hilbert(vol_cycle))
-        
-        df['Sync'] = np.cos(price_phase - vol_phase)
-        df['Sync_Smooth'] = df['Sync'].rolling(3).mean()
-        return df.iloc[100:]
+        df['Hurst'] = Signal_Processor.rolling_hurst(df['Close'], window=50)
+        df['EMA20'] = df['SMA20'] # UI 兼容
+        return df.iloc[50:]
 
 class Strategy_Engine:
     @staticmethod
     def evaluate(df, capital=100000, risk_pct=0.02):
         last = df.iloc[-1]
+        is_trending = last['Hurst'] > 0.55
+        is_bullish = last['SMA20'] > last['SMA50']
+        regime = "TRENDING" if is_trending else "CHOP/NOISE"
+        score = 90 if (is_trending and is_bullish) else 50 if not is_trending else 10
         
-        # Regime
-        regime = "NEUTRAL"
-        if last['ADX'] > 25: regime = "TRENDING"
-        elif last['ADX'] < 20: regime = "RANGING"
-            
-        # Score
-        score = 50
-        if last['Sync_Smooth'] > 0.6: score += 25
-        elif last['Sync_Smooth'] < -0.6: score -= 25
-        if last['Close'] > last['EMA20']: score += 15
-        else: score -= 15
-        
-        if regime == "TRENDING" and last['RSI'] > 70: score += 5
-        elif regime == "RANGING":
-            if last['RSI'] > 70: score -= 20
-            if last['RSI'] < 30: score += 20
-            
-        score = min(max(score, 0), 100)
-        
-        # Position Sizing (Risk Management)
-        # Volatility Sizing: Risk Amount / (ATR * Multiplier)
         risk_amount = capital * risk_pct
-        stop_loss_dist = last['ATR'] * 2.5 # 2.5 ATR Stop
-        if stop_loss_dist == 0: position_size = 0
-        else: position_size = risk_amount / stop_loss_dist
-        
-        # Kelly Criterion Estimation (Simplified)
-        # Assuming win_rate=0.45, reward_risk=2.0 for Trend Following
-        kelly_f = 0.45 - (0.55 / 2.0) # ~ 17%
-        kelly_size = (capital * max(kelly_f, 0)) / last['Close']
-        
-        suggested_pos = min(position_size, kelly_size) if score >= 70 else 0
+        stop_loss_dist = last['ATR'] * 2.5 
+        position_size = 0 if stop_loss_dist == 0 else risk_amount / stop_loss_dist
+        suggested_pos = position_size if score >= 70 else 0
         
         return {
             "score": score,
@@ -155,155 +102,217 @@ class Strategy_Engine:
         }
 
 # =============================================================================
-# 3. 擴展模組 (Expansion Modules)
+# 3. 市場爬蟲與過濾器 (Market Crawlers & Filters)
+# =============================================================================
+class Market_List_Provider:
+    @staticmethod
+    @st.cache_data(ttl=86400)
+    def get_full_tw_tickers():
+        try:
+            url_twse = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
+            df_twse = pd.read_html(requests.get(url_twse, timeout=10).text)[0]
+            df_twse.columns = df_twse.iloc[0]
+            
+            url_tpex = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"
+            df_tpex = pd.read_html(requests.get(url_tpex, timeout=10).text)[0]
+            df_tpex.columns = df_tpex.iloc[0]
+            
+            df_all = pd.concat([df_twse.iloc[1:], df_tpex.iloc[1:]])
+            df_all['Code'] = df_all['有價證券代號及名稱'].apply(lambda x: x.split()[0] if type(x)==str else "")
+            stocks = df_all[df_all['Code'].str.len() == 4]
+            return [f"{c}.TW" for c in stocks['Code'].tolist()]
+        except:
+            return ["2330.TW", "2317.TW", "2454.TW", "2603.TW", "2881.TW"]
+
+    @staticmethod
+    def get_crypto_list():
+        return ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "DOGE-USD", "ADA-USD", "AVAX-USD"]
+
+class Batch_Pre_Filter:
+    @staticmethod
+    def filter_by_volume(tickers, min_volume_shares=1000000):
+        survivors = []
+        batch_size = 50 
+        status_text, bar = st.empty(), st.progress(0)
+        
+        for i in range(0, len(tickers), batch_size):
+            batch = tickers[i : i+batch_size]
+            status_text.text(f"🚀 Filtering Volume: Batch {i//batch_size + 1}...")
+            bar.progress(min((i + batch_size) / len(tickers), 1.0))
+            try:
+                df = yf.download(" ".join(batch), period="5d", group_by='ticker', progress=False, threads=True)
+                for t in batch:
+                    try:
+                        if len(batch) == 1:
+                            vol, price = df['Volume'].iloc[-1], df['Close'].iloc[-1]
+                        else:
+                            if t not in df.columns.levels[0]: continue
+                            vol, price = df[t]['Volume'].iloc[-1], df[t]['Close'].iloc[-1]
+                        if pd.notna(vol) and pd.notna(price) and vol > min_volume_shares and price > 10:
+                            survivors.append(t)
+                    except: continue
+            except: pass
+        bar.empty(), status_text.empty()
+        return survivors
+
+# =============================================================================
+# 4. 渲染模組 (Render Modules)
 # =============================================================================
 def render_macro():
     st.markdown("### 🌍 Macro Oracle (宏觀風向)")
     c1, c2, c3 = st.columns(3)
-    
-    # 抓取 VIX 和 美元指數
     vix = fetch_data("^VIX", period="1mo")
     dxy = fetch_data("DX-Y.NYB", period="1mo")
     
     if not vix.empty:
-        curr_vix = vix['Close'].iloc[-1]
-        delta_vix = curr_vix - vix['Close'].iloc[-2]
-        c_vix = "#F85149" if curr_vix > 20 else "#3FB950"
-        c1.metric("VIX (恐慌指數)", f"{curr_vix:.2f}", f"{delta_vix:.2f}", delta_color="inverse")
-        
+        c1.metric("VIX (恐慌指數)", f"{vix['Close'].iloc[-1]:.2f}", f"{vix['Close'].iloc[-1] - vix['Close'].iloc[-2]:.2f}", delta_color="inverse")
     if not dxy.empty:
-        curr_dxy = dxy['Close'].iloc[-1]
-        c2.metric("DXY (美元指數)", f"{curr_dxy:.2f}", f"{curr_dxy - dxy['Close'].iloc[-2]:.2f}")
-        
-    # 簡易風向判斷
+        c2.metric("DXY (美元指數)", f"{dxy['Close'].iloc[-1]:.2f}", f"{dxy['Close'].iloc[-1] - dxy['Close'].iloc[-2]:.2f}")
+    
     status = "NEUTRAL"
     if not vix.empty:
-        if curr_vix > 25: status = "RISK OFF (避險)"
-        elif curr_vix < 15: status = "RISK ON (積極)"
-    
-    c3.markdown(f"""
-    <div class='metric-card'>
-        <div class='highlight-lbl'>MARKET REGIME</div>
-        <div class='highlight-val' style='font-size:20px'>{status}</div>
-    </div>
-    """, unsafe_allow_html=True)
+        status = "RISK OFF (避險)" if vix['Close'].iloc[-1] > 25 else "RISK ON (積極)" if vix['Close'].iloc[-1] < 15 else "NEUTRAL"
+    c3.markdown(f"<div class='metric-card'><div class='highlight-lbl'>MARKET REGIME</div><div class='highlight-val'>{status}</div></div>", unsafe_allow_html=True)
 
 def render_scanner():
-    st.markdown("### 🔭 Quantum Scanner (批量掃描)")
-    st.caption("使用因果物理引擎掃描觀察清單")
+    st.markdown("### 🔭 Quantum Scanner (Leviathan Mode)")
+    col1, col2 = st.columns([2, 1])
+    with col1: market = st.selectbox("Market Target", ["🇹🇼 台股全市場 (Full TW)", "🪙 Crypto Top 20"])
+    with col2: vol_lots = st.slider("Min Volume (張/Lots)", 500, 10000, 2000, step=500) if "TW" in market else 0
     
-    # 預設觀察清單
-    default_tickers = "2330.TW, 2317.TW, 2454.TW, 2603.TW, NVDA, TSLA, BTC-USD, ETH-USD"
-    user_input = st.text_area("輸入代碼 (逗號分隔)", default_tickers)
-    
-    if st.button("🚀 開始掃描"):
-        tickers = [t.strip() for t in user_input.split(",")]
-        results = []
+    if st.button("🚀 Start Deep Scan"):
+        raw_tickers = Market_List_Provider.get_full_tw_tickers() if "TW" in market else Market_List_Provider.get_crypto_list()
+        targets = Batch_Pre_Filter.filter_by_volume(raw_tickers, min_volume_shares=vol_lots*1000) if "TW" in market else raw_tickers
+        if not targets:
+            st.warning("No liquid assets found."); return
         
-        progress = st.progress(0)
-        for i, t in enumerate(tickers):
-            df = fetch_data(t)
-            if not df.empty and len(df) > 200:
-                df_eng = Signal_Processor.engineer_features(df)
-                res = Strategy_Engine.evaluate(df_eng)
-                results.append({
-                    "Ticker": t,
-                    "Score": res['score'],
-                    "Regime": res['regime'],
-                    "Sync": res['last']['Sync_Smooth'],
-                    "Price": res['last']['Close']
-                })
-            progress.progress((i+1)/len(tickers))
+        res_list, bar, status = [], st.progress(0), st.empty()
+        for i, t in enumerate(targets):
+            status.text(f"🔬 Physics Engine: {t}...")
+            try:
+                df = fetch_data(t, period="1y")
+                if len(df) > 100:
+                    res = Strategy_Engine.evaluate(Signal_Processor.engineer_features(df))
+                    if res['score'] >= 70 or res['last']['Hurst'] > 0.55:
+                        res_list.append({"Ticker": t, "Price": res['last']['Close'], "Score": res['score'], "Hurst": res['last']['Hurst']})
+            except: pass
+            bar.progress(min((i+1)/len(targets), 1.0))
             
-        if results:
-            res_df = pd.DataFrame(results).sort_values("Score", ascending=False)
-            st.dataframe(
-                res_df.style.background_gradient(subset=['Score'], cmap='RdYlGn', vmin=0, vmax=100)
-                      .format({"Price": "{:.2f}", "Sync": "{:.2f}"}),
-                use_container_width=True
-            )
-        else:
-            st.warning("無有效數據。")
+        status.empty(), bar.empty()
+        if res_list:
+            df_res = pd.DataFrame(res_list).sort_values(by=["Score", "Hurst"], ascending=[False, False])
+            st.dataframe(df_res.style.background_gradient(subset=['Score'], cmap='RdYlGn').background_gradient(subset=['Hurst'], cmap='Purples', vmin=0.5, vmax=0.7).format({"Price": "{:.2f}", "Hurst": "{:.3f}"}), use_container_width=True)
 
 def render_analysis():
     st.markdown("### 🛡️ Single Asset Deep Dive")
     c_side, c_main = st.columns([1, 3])
-    
     with c_side:
         ticker = st.text_input("Ticker", "2330.TW")
-        capital = st.number_input("Account Capital ($)", value=100000, step=10000)
-        risk = st.slider("Risk per Trade (%)", 0.5, 5.0, 2.0) / 100
+        capital, risk = st.number_input("Capital ($)", value=100000, step=10000), st.slider("Risk/Trade (%)", 0.5, 5.0, 2.0) / 100
         run = st.button("ANALYZE", type="primary")
         
     if run:
-        with st.spinner("Calculating Physics..."):
-            raw_df = fetch_data(ticker)
-            if raw_df.empty or len(raw_df) < 200:
-                st.error("數據不足 (需 > 200 K棒)")
+        df = Signal_Processor.engineer_features(fetch_data(ticker))
+        res = Strategy_Engine.evaluate(df, capital, risk)
+        color = "#3FB950" if res['score'] >= 70 else "#F85149" if res['score'] <= 30 else "#8B949E"
+        
+        c1, c2, c3 = st.columns(3)
+        c1.markdown(f"<div class='signal-box' style='border-top: 4px solid {color}'><div class='highlight-lbl'>ACTION</div><div class='highlight-val' style='color:{color}'>{'LONG' if res['score']>=70 else 'WAIT'}</div><div style='color:#888'>{res['regime']} (H={res['last']['Hurst']:.2f})</div></div>", unsafe_allow_html=True)
+        c2.markdown(f"<div class='metric-card'><div class='highlight-lbl'>SIZE</div><div class='highlight-val'>{res['suggested_shares']:,}</div></div>", unsafe_allow_html=True)
+        c3.markdown(f"<div class='metric-card'><div class='highlight-lbl'>RISK (2.5x ATR)</div><div style='color:#F85149'>SL: ${res['stop_loss']:.2f}</div><div style='color:#3FB950'>TP: ${res['take_profit']:.2f}</div></div>", unsafe_allow_html=True)
+
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.03)
+        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA20'], line=dict(color='#FFAE00'), name='SMA20'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], line=dict(color='#00BFFF', dash='dot'), name='SMA50'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['Hurst'], line=dict(color='#D2A8FF'), name='Hurst'), row=2, col=1)
+        fig.add_hrect(y0=0.55, y1=1.0, row=2, col=1, fillcolor="#3FB950", opacity=0.15)
+        fig.update_layout(template="plotly_dark", height=600, xaxis_rangeslider_visible=False, margin=dict(l=0,r=0,t=0,b=0))
+        st.plotly_chart(fig, use_container_width=True)
+
+# =============================================================================
+# [NEW] 5. 歷史回測模組 (Backtest Engine Module)
+# =============================================================================
+def render_backtest():
+    st.markdown("### 📊 Historical Backtest Engine")
+    st.caption("驗證物理邏輯：Hurst > 0.55 且 MA多頭 + 2.5x ATR 動態止損")
+    
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col1: ticker = st.text_input("Ticker to Backtest", "2330.TW")
+    with col2: years = st.slider("History (Years)", 1, 10, 4)
+    with col3: friction = st.number_input("Friction per Trade (%)", value=0.1, step=0.05) / 100
+
+    if st.button("⚙️ Execute Backtest"):
+        with st.spinner("Processing Time Series..."):
+            df = fetch_data(ticker, period=f"{years}y")
+            if df.empty or len(df) < 100:
+                st.error("Insufficient historical data.")
                 return
                 
-            df = Signal_Processor.engineer_features(raw_df)
-            res = Strategy_Engine.evaluate(df, capital, risk)
+            df = Signal_Processor.engineer_features(df).reset_index()
             
-            # --- Signal Section ---
-            score = res['score']
-            color = "#3FB950" if score >= 70 else "#F85149" if score <= 30 else "#8B949E"
-            action = "LONG" if score >= 70 else "SHORT/CASH" if score <= 30 else "WAIT"
+            # --- Vectorized Simulation & State Machine ---
+            signal = np.zeros(len(df))
+            in_pos = False
+            highest_high = 0
             
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown(f"""
-                <div class="signal-box" style="border-top: 4px solid {color}">
-                    <div class="highlight-lbl">ACTION</div>
-                    <div class="highlight-val" style="color:{color}">{action}</div>
-                    <div>Score: {score:.0f}</div>
-                </div>
-                """, unsafe_allow_html=True)
+            for i in range(1, len(df)):
+                if not in_pos:
+                    if df['SMA20'].iloc[i-1] > df['SMA50'].iloc[i-1] and df['Hurst'].iloc[i-1] > 0.55:
+                        in_pos = True
+                        highest_high = df['High'].iloc[i]
+                        signal[i] = 1
+                else:
+                    highest_high = max(highest_high, df['High'].iloc[i])
+                    stop_price = highest_high - (2.5 * df['ATR'].iloc[i-1])
+                    if df['Close'].iloc[i-1] < stop_price or df['SMA20'].iloc[i-1] < df['SMA50'].iloc[i-1]:
+                        in_pos = False
+                        signal[i] = 0
+                    else:
+                        signal[i] = 1
+                        
+            # --- Performance Metrics ---
+            base_ret = pd.Series(signal).shift(1) * df['Close'].pct_change()
+            base_ret = base_ret.fillna(0)
+            trade_events = pd.Series(signal).diff().abs().fillna(0)
+            net_ret = base_ret - (trade_events * friction)
             
-            with c2:
-                # Position Sizing Card
-                shares = res['suggested_shares']
-                pos_val = shares * res['last']['Close']
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="highlight-lbl">SUGGESTED SIZE</div>
-                    <div class="highlight-val">{shares:,} <span style="font-size:14px">shares</span></div>
-                    <div style="font-size:12px; color:#888">Val: ${pos_val:,.0f} (Kelly/ATR)</div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-            with c3:
-                # Risk Card
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="highlight-lbl">RISK PLAN</div>
-                    <div style="color:#F85149">SL: ${res['stop_loss']:.2f}</div>
-                    <div style="color:#3FB950">TP: ${res['take_profit']:.2f}</div>
-                    <div style="font-size:12px; color:#888">Risk: ${res['risk_exposure']:.0f}</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            # --- Chart ---
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.03)
-            fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], line=dict(color='#FFAE00', width=1), name='EMA20'), row=1, col=1)
+            df['Strategy_Equity'] = (1 + net_ret).cumprod() * 100
+            df['Hold_Equity'] = (1 + df['Close'].pct_change().fillna(0)).cumprod() * 100
             
-            fig.add_trace(go.Scatter(x=df.index, y=df['Sync_Smooth'], line=dict(color='#D2A8FF', width=2), name='Sync'), row=2, col=1)
-            fig.add_hrect(y0=0.6, y1=1.1, row=2, col=1, fillcolor="#3FB950", opacity=0.1, line_width=0)
-            fig.add_hline(y=0, row=2, col=1, line_dash="dot", line_color="#555")
+            str_cum_ret = df['Strategy_Equity'].iloc[-1] - 100
+            str_max_dd = (df['Strategy_Equity'] / df['Strategy_Equity'].cummax() - 1).min() * 100
+            sharpe = np.sqrt(252) * net_ret.mean() / net_ret.std() if net_ret.std() != 0 else 0
             
-            fig.update_layout(template="plotly_dark", height=600, xaxis_rangeslider_visible=False, margin=dict(l=0,r=0,t=0,b=0))
+            # --- Render Dashboard ---
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Net Return", f"{str_cum_ret:.2f}%")
+            c2.metric("Max Drawdown", f"{str_max_dd:.2f}%")
+            c3.metric("Sharpe Ratio", f"{sharpe:.2f}")
+            c4.metric("Total Trades", int(trade_events.sum()))
+            
+            # --- Equity Curve Chart ---
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=df['Date'], y=df['Strategy_Equity'], line=dict(color='#3FB950', width=2), name='Strategy (Net)'))
+            fig.add_trace(go.Scatter(x=df['Date'], y=df['Hold_Equity'], line=dict(color='#888', dash='dot'), name='Buy & Hold'))
+            fig.update_layout(template="plotly_dark", height=400, title="Equity Curve Comparison")
             st.plotly_chart(fig, use_container_width=True)
 
 # =============================================================================
-# 4. 主程序入口
+# 主程序入口 (Main Router)
 # =============================================================================
 def main():
     st.sidebar.markdown("## 🛡️ SYSTEM MODE")
-    mode = st.sidebar.radio("Select Module", ["1. Single Analysis", "2. Market Scanner", "3. Macro Dashboard"])
+    mode = st.sidebar.radio("Navigation", [
+        "1. Single Analysis (即時分析)", 
+        "2. Market Scanner (批次掃描)", 
+        "3. Historical Backtest (歷史回測)",
+        "4. Macro Dashboard (巨集儀表板)"
+    ])
     
     if "Single" in mode: render_analysis()
     elif "Scanner" in mode: render_scanner()
+    elif "Backtest" in mode: render_backtest()
     elif "Macro" in mode: render_macro()
 
 if __name__ == "__main__":
