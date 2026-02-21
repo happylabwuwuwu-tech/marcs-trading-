@@ -200,7 +200,7 @@ def render_scanner():
             bar.progress(min((i+1)/len(targets), 1.0))
             
         _ = bar.empty()
-        _ = status_text.empty()
+        _ = status.empty()
         if res_list:
             df_res = pd.DataFrame(res_list).sort_values(by=["Score", "Hurst"], ascending=[False, False])
             st.dataframe(df_res.style.background_gradient(subset=['Score'], cmap='RdYlGn').background_gradient(subset=['Hurst'], cmap='Purples', vmin=0.5, vmax=0.7).format({"Price": "{:.2f}", "Hurst": "{:.3f}"}), use_container_width=True)
