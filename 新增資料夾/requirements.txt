@@ -2,12 +2,10 @@ streamlit
 pandas
 numpy
 yfinance
-matplotlib
 requests
-statsmodels
-pandas-datareader
-finmind
-packaging
-tqdm
+cvxpy
 plotly
+scipy
 lxml
+html5lib
+beautifulsoup4
