@@ -4,6 +4,7 @@ import numpy as np
 import yfinance as yf
 import requests
 import warnings
+import cvxpy as cp
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
@@ -78,6 +79,127 @@ class Signal_Processor:
         return df.iloc[50:]
 
 class Strategy_Engine:
+class GAMMA_Engine:
+    """
+    機構級量化核心：整合 SVD 正交投影、Ledoit-Wolf 共變異數收縮與帶換手率懲罰的凸優化器。
+    專為 Long-Only (純做多) 實盤環境打造。
+    """
+    
+    @staticmethod
+    def robust_orthogonal_projection(alpha: np.ndarray, X: np.ndarray, variance_threshold: float = 0.85) -> np.ndarray:
+        """模組 1: SVD Alpha 中性化 (剝離系統性 Beta)"""
+        # 居中化處理 (Demean)
+        X_demean = X - np.mean(X, axis=0)
+        U, S, Vt = np.linalg.svd(X_demean, full_matrices=False)
+        
+        explained_variance_ratio = (S ** 2) / np.sum(S ** 2)
+        cumulative_variance = np.cumsum(explained_variance_ratio)
+        
+        # 找出代表大盤與產業風險的主成分數量
+        k_components = np.argmax(cumulative_variance >= variance_threshold) + 1
+        k_components = min(k_components, X.shape[1] - 1) # 防禦極端情況
+        
+        U_k = U[:, :k_components]
+        N_assets = X.shape[0]
+        
+        # 正交投影矩陣 P = I - U_k * U_k^T
+        P = np.eye(N_assets) - U_k @ U_k.T
+        alpha_neutral = P @ alpha
+        
+        # 正規化 Alpha 以利優化器讀取 (Z-score)
+        if np.std(alpha_neutral) > 0:
+            alpha_neutral = (alpha_neutral - np.mean(alpha_neutral)) / np.std(alpha_neutral)
+            
+        return alpha_neutral
+
+    @staticmethod
+    def linear_covariance_shrinkage(returns: np.ndarray, delta: float = 0.5) -> np.ndarray:
+        """模組 2: ESL 線性共變異數收縮 (防禦奇異矩陣)"""
+        S = np.cov(returns, rowvar=False)
+        # 目標矩陣 F: 假設資產互不相關 (僅保留對角線變異數)
+        F = np.diag(np.diag(S))
+        
+        # 收縮融合
+        Sigma_shrink = delta * F + (1 - delta) * S
+        
+        # 強制對稱與微小正定化 (防禦數值精度問題)
+        Sigma_shrink = (Sigma_shrink + Sigma_shrink.T) / 2
+        Sigma_shrink += np.eye(Sigma_shrink.shape[0]) * 1e-8
+        
+        return Sigma_shrink
+
+    @staticmethod
+    def optimize_long_only_portfolio(
+        alpha: np.ndarray, 
+        Sigma: np.ndarray, 
+        w_prev: np.ndarray, 
+        risk_aversion: float = 2.0, 
+        turnover_penalty: float = 0.003, # 台股單邊交易成本約 0.3% (千三證交稅+手續費)
+        max_position: float = 0.3        # 單一股票最高佔比 30% (防禦 AI 單邊曝險)
+    ) -> np.ndarray:
+        """模組 3: 帶換手率懲罰的凸優化 (Long-Only)"""
+        N = len(alpha)
+        w = cp.Variable(N)
+        
+        expected_return = alpha.T @ w
+        risk = cp.quad_form(w, cp.psd_wrap(Sigma)) # psd_wrap 確保 CVXPY 認知其為半正定矩陣
+        turnover = cp.norm(w - w_prev, 1) # L1 絕對值距離 (換手率)
+        
+        # 目標：最大化 (預期報酬 - 風險懲罰 - 摩擦成本)
+        objective = cp.Maximize(expected_return - (risk_aversion * risk) - (turnover_penalty * turnover))
+        
+        # Long-Only 約束條件
+        constraints = [
+            cp.sum(w) == 1.0,  # 1. 資金必須 100% 分配 (Long-Only 限制)
+            w >= 0.0,          # 2. 禁止做空 (w >= 0)
+            w <= max_position  # 3. 集中度限制 (單一資產不得超過 30%)
+        ]
+        
+        prob = cp.Problem(objective, constraints)
+        
+        try:
+            # 優先使用 ECOS 或 OSQP 求解器
+            prob.solve(solver=cp.ECOS)
+            if prob.status not in ["optimal", "optimal_inaccurate"]:
+                return w_prev # 若無解，維持上一期權重不動作
+            
+            # 清理極小浮點數
+            w_opt = np.array(w.value)
+            w_opt[w_opt < 1e-4] = 0.0
+            return w_opt / np.sum(w_opt)
+            
+        except Exception as e:
+            print(f"Optimizer failed: {e}")
+            return w_prev
+
+    @classmethod
+    def run_pipeline(cls, returns_df: pd.DataFrame, raw_alpha: pd.Series, w_prev: dict = None) -> dict:
+        """
+        GAMMA 終極執行入口 (供 Streamlit 直接呼叫)
+        :param returns_df: N 檔資產的歷史報酬率 DataFrame (T x N)
+        :param raw_alpha: N 檔資產的原始訊號分數 Series (例如: Hurst > 0.55 的股票給 1，其餘給 0)
+        :param w_prev: 上一期的權重字典 {Ticker: weight}，若為首次執行則為 None
+        """
+        tickers = returns_df.columns.tolist()
+        N = len(tickers)
+        
+        # 準備輸入格式
+        X = returns_df.values.T # (N_assets, T_days) 供投影使用
+        ret_matrix = returns_df.values # (T_days, N_assets) 供共變異數使用
+        alpha_vec = raw_alpha.reindex(tickers).fillna(0).values
+        
+        # 初始化上一期權重 (若無，預設為現金空手 0)
+        if w_prev is None:
+            w_p = np.zeros(N)
+        else:
+            w_p = np.array([w_prev.get(t, 0.0) for t in tickers])
+            
+        # 執行三大模組
+        alpha_neutral = cls.robust_orthogonal_projection(alpha_vec, X)
+        Sigma_shrink = cls.linear_covariance_shrinkage(ret_matrix)
+        w_opt = cls.optimize_long_only_portfolio(alpha_neutral, Sigma_shrink, w_p)
+        
+        return dict(zip(tickers, np.round(w_opt, 4)))
     @staticmethod
     def evaluate(df, capital=100000, risk_pct=0.02):
         last = df.iloc[-1]
